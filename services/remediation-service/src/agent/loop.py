@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from math import ceil
 from typing import Any, Literal
 
@@ -15,7 +15,8 @@ from ..retrieval.snapshot import validate_repo_path
 from ..verification import VerificationResult, Verifier
 from ..verification.checks import dependencies_installed
 from .checkpoint import AgentCheckpointStore, BudgetCapExceeded, CheckpointError
-from .provider import LLMProvider, ProviderError
+from .provider import LLMProvider, ProviderAction, ProviderError
+from .source_redaction import REDACTION_MARKER, SourceRedactionError, SourceRedactor
 from .tools import tool_definitions
 
 
@@ -257,6 +258,28 @@ class RepairAgent:
         proofs: dict[str, dict[str, Any]] | None = None,
         prior_attempts: dict[str, dict[str, Any]] | None = None,
     ) -> AgentResult:
+        self._boundary_usage = {"input_tokens": 0, "output_tokens": 0, "provider_request_ids": []}
+        try:
+            self._redactor = await asyncio.to_thread(
+                SourceRedactor, snapshot, request.model_dump(mode="json", exclude={"files"}), proofs, prior_attempts,
+            )
+            return await self._run(request, snapshot, proofs, prior_attempts)
+        except SourceRedactionError:
+            # Never return a previously proven fallback after the credential boundary fails.
+            # Neither the exception nor the repository data is logged or checkpointed here.
+            return AgentResult(
+                "inconclusive", None, None, None, "source_secret_redaction_failed",
+                "Repository credentials could not be safely redacted; no further provider calls were made.",
+                [], self._boundary_usage,
+            )
+
+    async def _run(
+        self,
+        request: RepairRequest,
+        snapshot: Snapshot,
+        proofs: dict[str, dict[str, Any]] | None = None,
+        prior_attempts: dict[str, dict[str, Any]] | None = None,
+    ) -> AgentResult:
         """One bounded repair loop for the request's findings.
 
         `proofs` are the service-generated regression tests by finding id, each
@@ -266,6 +289,7 @@ class RepairAgent:
         """
         self._settlements = []
         self._proofs = {finding_id: dict(spec) for finding_id, spec in (proofs or {}).items()}
+        provider_snapshot = await asyncio.to_thread(self._redactor.snapshot_view, snapshot)
         # The best verified candidate so far: a passed verification that proved a subset of the
         # group. A run that ends any other way after one exists still returns it.
         self._best: tuple[dict[str, Any], PatchBundle, VerificationResult, dict[str, Any]] | None = None
@@ -292,7 +316,7 @@ class RepairAgent:
             for finding in request.findings
         ]
         messages: list[dict[str, Any]] = [
-            {"role": "system", "content": system_prompt(request)},
+            {"role": "system", "content": system_prompt(request) + "\nCredential values and all URLs are redacted as " + REDACTION_MARKER + ". Quote masked original_lines exactly; never copy a placeholder into replacement code or tests. Narrow the hunk or abstain when a hidden value is needed."},
             {
                 "role": "user",
                 "content": json.dumps(
@@ -336,6 +360,7 @@ class RepairAgent:
                 ),
             },
         ]
+        messages = self._redactor.sanitize(messages)
         trace: list[dict[str, Any]] = []
         proposal: dict[str, Any] | None = None
         bundle: PatchBundle | None = None
@@ -370,6 +395,7 @@ class RepairAgent:
             except CheckpointError:
                 return self._result("inconclusive", None, None, None, "checkpoint_unavailable", "The durable agent checkpoint could not be loaded.", trace, 0, 0, [])
             if checkpoint:
+                checkpoint = self._redact_checkpoint(checkpoint)
                 if checkpoint.get("context_manifest_digest") != snapshot.manifest_digest:
                     return self._result("inconclusive", None, None, None, "checkpoint_context_mismatch", "The checkpoint does not match the exact source snapshot.", trace, 0, 0, [])
                 messages = checkpoint.get("messages", messages)
@@ -387,13 +413,7 @@ class RepairAgent:
                         # `build_patch_bundle` shells out to `node --check`, so it runs off the
                         # event loop: a blocking subprocess here stops the worker's heartbeats
                         # and costs the lease.
-                        bundle = await asyncio.to_thread(
-                            build_patch_bundle,
-                            request,
-                            snapshot,
-                            proposal_arguments["changes"],
-                            _regression_tests(proposal_arguments),
-                        )
+                        bundle = await asyncio.to_thread(self._build_bundle, request, snapshot, proposal_arguments)
                         proposal = self._proposal_summary(proposal_arguments)
                     except (KeyError, TypeError, ValueError, SnapshotError, PatchPolicyError) as exc:
                         return self._result(
@@ -417,13 +437,7 @@ class RepairAgent:
                 best_data = coverage.get("best")
                 if best_data:
                     try:
-                        best_bundle = await asyncio.to_thread(
-                            build_patch_bundle,
-                            request,
-                            snapshot,
-                            best_data["proposal_arguments"]["changes"],
-                            _regression_tests(best_data["proposal_arguments"]),
-                        )
+                        best_bundle = await asyncio.to_thread(self._build_bundle, request, snapshot, best_data["proposal_arguments"])
                         self._best = (
                             self._proposal_summary(best_data["proposal_arguments"]),
                             best_bundle,
@@ -436,9 +450,7 @@ class RepairAgent:
                         self._best = None
                 action_data = checkpoint.get("pending_action")
                 if action_data:
-                    from .provider import ProviderAction
-
-                    pending_action = ProviderAction(**action_data)
+                    pending_action = self._safe_action(ProviderAction(**action_data))
                 start_index = len(trace)
 
         for index in range(start_index, request.policy.max_tool_calls):
@@ -508,11 +520,13 @@ class RepairAgent:
                             reservation_evidence,
                         )
                 try:
-                    action = await self.provider.next_action(messages, tool_definitions(request_language(request)))
+                    action = await self.provider.next_action(self._redactor.sanitize(messages), tool_definitions(request_language(request)))
                 except ProviderError:
                     return self._result("inconclusive", None, None, last_verification, "provider_error", "Repair provider failed safely.", trace, input_tokens, output_tokens, provider_request_ids)
                 input_tokens += action.input_tokens
                 output_tokens += action.output_tokens
+                self._boundary_usage = {"input_tokens": input_tokens, "output_tokens": output_tokens, "provider_request_ids": list(provider_request_ids)}
+                action = self._safe_action(action)
                 if action.input_tokens > 0:
                     last_prompt_tokens = action.input_tokens
                     appended_since_usage = 0
@@ -543,7 +557,7 @@ class RepairAgent:
                 try:
                     settlement = await self.checkpoint_store.save_provider_action(
                         self._checkpoint_state(snapshot, messages, trace, proposal_arguments, last_verification, verification_attempts, input_tokens, output_tokens, provider_request_ids, context_chars_used, revision_pending),
-                        action,
+                        self._safe_action(action),
                         action.input_tokens + action.output_tokens,
                         actual_usd,
                     )
@@ -601,30 +615,30 @@ class RepairAgent:
                 if action.name == "search_code":
                     output = [
                         hit.provenance(request) | {"content": hit.content}
-                        for hit in snapshot.search(str(action.arguments["query"]), max_chars=result_chars)
+                        for hit in provider_snapshot.search(str(action.arguments["query"]), max_chars=result_chars)
                     ]
                 elif action.name == "read_file":
                     path = str(action.arguments["path"])
-                    start, end = self._read_window(snapshot, path, action.arguments, finding_windows)
-                    hit = snapshot.read(path, start, end, max_chars=result_chars)
+                    start, end = self._read_window(provider_snapshot, path, action.arguments, finding_windows)
+                    hit = provider_snapshot.read(path, start, end, max_chars=result_chars)
                     # Numbered lines, not a blob: a patch hunk quotes these back verbatim, so the
                     # agent never has to count lines or compute a digest to name a range.
                     output = hit.provenance(request) | _numbered_read(hit, result_chars)
                 elif action.name == "find_references":
                     output = [
                         hit.provenance(request) | {"content": hit.content}
-                        for hit in snapshot.symbol_references(str(action.arguments["symbol"]), max_chars=result_chars)
+                        for hit in provider_snapshot.symbol_references(str(action.arguments["symbol"]), max_chars=result_chars)
                     ]
                 elif action.name == "read_dependency":
                     path = str(action.arguments["path"])
                     if path.rsplit("/", 1)[-1] not in {"package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock"}:
                         raise SnapshotError("not_an_allowed_dependency_manifest")
-                    hit = snapshot.read(path, max_chars=result_chars)
+                    hit = provider_snapshot.read(path, max_chars=result_chars)
                     output = hit.provenance(request) | {"content": hit.content}
                 elif action.name == "read_tests":
                     output = [
                         hit.provenance(request) | {"content": hit.content}
-                        for hit in snapshot.nearest_tests(str(action.arguments["source_path"]), max_chars=result_chars)
+                        for hit in provider_snapshot.nearest_tests(str(action.arguments["source_path"]), max_chars=result_chars)
                     ]
                 elif action.name == "propose_patch":
                     if verification_attempts >= request.policy.max_attempts:
@@ -636,14 +650,12 @@ class RepairAgent:
                     self._validate_revision_keeps_proven_tests(action.arguments)
                     # The service proofs are merged into the proposal before it is built, so a
                     # checkpointed proposal carries them and a resume rebuilds the same bundle.
-                    action.arguments["regression_tests"] = self._merge_proofs(_regression_tests(action.arguments))
+                    action = replace(action, arguments=dict(action.arguments) | {"regression_tests": self._merge_proofs(_regression_tests(action.arguments))})
                     # Off the event loop: `node --check` is a blocking subprocess and the
                     # worker's heartbeats share this loop.
-                    bundle = await asyncio.to_thread(
-                        build_patch_bundle, request, snapshot, action.arguments["changes"], action.arguments["regression_tests"]
-                    )
+                    bundle = await asyncio.to_thread(self._build_bundle, request, snapshot, action.arguments)
                     proposal = self._proposal_summary(action.arguments)
-                    proposal_arguments = action.arguments
+                    proposal_arguments = self._redactor.sanitize(action.arguments)
                     proposal_call_id = action.call_id
                     revision_pending = False
                     tested = {test.finding_id for test in bundle.generated_tests}
@@ -779,10 +791,11 @@ class RepairAgent:
                     }
                 ],
             }
+            assistant_message = self._redactor.sanitize(assistant_message)
             messages.append(assistant_message)
             appended_since_usage += estimate_message_tokens(assistant_message)
             remaining_context = max(0, request.policy.max_context_chars - context_chars_used)
-            rendered_output = self._bounded_json(output, remaining_context)
+            rendered_output = self._bounded_json(self._redactor.sanitize(output), remaining_context)
             context_chars_used += len(rendered_output)
             step["result_bytes"] = len(rendered_output.encode("utf-8"))
             tool_message = {"role": "tool", "tool_call_id": action.call_id, "content": rendered_output}
@@ -820,6 +833,35 @@ class RepairAgent:
                 )
 
         return self._result("inconclusive", proposal, bundle, last_verification, "tool_budget_exhausted", "The bounded repair loop exhausted its tool budget.", trace, input_tokens, output_tokens, provider_request_ids)
+
+    def _safe_action(self, action: ProviderAction) -> ProviderAction:
+        try:
+            return ProviderAction(**self._redactor.sanitize(asdict(action)))
+        except SourceRedactionError:
+            # Still settle a paid provider response, but persist only this fixed refusal.
+            return ProviderAction(
+                "abstain", {"reason_code": "source_secret_redaction_failed", "explanation": "Provider content could not be safely redacted."},
+                call_id="redaction-refused", input_tokens=action.input_tokens, output_tokens=action.output_tokens,
+            )
+
+    def _build_bundle(self, request: RepairRequest, snapshot: Snapshot, arguments: dict[str, Any]) -> PatchBundle:
+        tests = []
+        for spec in _regression_tests(arguments):
+            item = dict(spec) if isinstance(spec, dict) else spec
+            if isinstance(item, dict):
+                proof = self._proofs.get(item.get("finding_id"))
+                if proof and item.get("path") == proof["path"]:
+                    # Only a fixed, authoritative service proof can be restored. It never comes
+                    # from a placeholder lookup supplied by the model or durable checkpoint.
+                    if item.get("content") not in (proof["content"], self._redactor.sanitize(proof["content"])):
+                        raise PatchPolicyError("service_proof_content_changed")
+                    item["content"] = proof["content"]
+                elif REDACTION_MARKER in str(item.get("content", "")):
+                    raise PatchPolicyError("redacted_secret_in_regression_test", "Do not use hidden credential placeholders in a test; abstain if the value is needed.")
+            tests.append(item)
+        return build_patch_bundle(
+            request, snapshot, self._redactor.restore_anchors(arguments["changes"], snapshot), tests, load_checks=False,
+        )
 
     @staticmethod
     def _finding_windows(request: RepairRequest) -> dict[str, tuple[int, int]]:
@@ -1092,7 +1134,7 @@ class RepairAgent:
         return {"keys": sorted(arguments), "paths": [c.get("path") for c in arguments.get("changes", []) if isinstance(c, dict)]}
 
     def _checkpoint_state(self, snapshot, messages, trace, proposal_arguments, verification, verification_attempts, input_tokens, output_tokens, provider_request_ids, context_chars_used, revision_pending=False):
-        return {
+        state = {
             "schema_version": "v1",
             "context_manifest_digest": snapshot.manifest_digest,
             "messages": messages,
@@ -1112,6 +1154,18 @@ class RepairAgent:
             "provider_request_ids": provider_request_ids,
             "context_chars_used": context_chars_used,
         }
+        return self._redact_checkpoint(state)
+
+    def _redact_checkpoint(self, state: dict[str, Any]) -> dict[str, Any]:
+        safe = self._redactor.sanitize(state)
+        # A redacted verification payload no longer matches its evidence digest. Never resume
+        # it as authoritative proof; rebuild/reverify instead of weakening evidence binding.
+        if safe.get("last_verification") != state.get("last_verification"):
+            safe["last_verification"] = None
+        best = (safe.get("coverage") or {}).get("best")
+        if best and best.get("verification") != state["coverage"]["best"].get("verification"):
+            safe["coverage"]["best"] = None
+        return safe
 
     @staticmethod
     def _reservation_evidence(

@@ -131,10 +131,6 @@ def _strip(result: dict[str, Any]) -> dict[str, Any]:
 SNAPSHOT_BYTE_BUDGET = 4_000_000
 
 
-class _AgentNeeded(Exception):
-    pass
-
-
 def _refusing_provider(modules: dict[str, Any], counter: dict[str, int]):
     action = modules["ProviderAction"]
 

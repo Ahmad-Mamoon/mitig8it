@@ -20,7 +20,6 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from .models import FindingSnapshot
-from .retrieval import Snapshot
 
 ROUTE_METHODS = ("get", "post", "put", "delete", "patch", "all")
 # Parameter names that are a continuation the function reports through. A repair of a
@@ -1379,14 +1378,6 @@ def python_site_for_line(source: str, line: int) -> PyFunction | ModuleScope:
         if exc.code != "enclosing_function_not_found":
             raise
     return python_module_scope(source, line)
-
-
-def enclosing_site(snapshot: Snapshot, finding: FindingSnapshot, language: str) -> JsRoute | JsFunction | PyFunction | ModuleScope:
-    source = snapshot.full_content(finding.affected_path)
-    line = _finding_line(finding)
-    if language == "python":
-        return python_site_for_line(source, line)
-    return js_site_for_line(source, line)
 
 
 # --- GitHub Actions workflows ---------------------------------------------------------------

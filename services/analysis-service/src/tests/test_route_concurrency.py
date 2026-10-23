@@ -108,8 +108,9 @@ def _opengrep_finding(template):
 
 
 @pytest.mark.parametrize("opengrep_delay", [0.0, 0.3])
-def test_combined_route_merges_tier_findings_in_tier_order(opengrep_delay):
+def test_combined_route_merges_tier_findings_in_tier_order(opengrep_delay, monkeypatch):
     """Tier 1 findings precede tier 2 findings whichever tier finishes first."""
+    monkeypatch.setattr(main, "PUBLICATION_RULE_IDS", main.PUBLICATION_RULE_IDS | {"opengrep.fake"})
     request = _request()
     tier1_ids = [f["rule_id"] for f in main.pattern_findings(list(request.files))]
     assert tier1_ids == ["code.injection.eval"]
@@ -141,3 +142,17 @@ def test_combined_route_fails_closed_when_opengrep_fails_after_tier1_succeeds():
     with patch("main.run_opengrep_with_limitations", side_effect=RuntimeError("detector unavailable")):
         with pytest.raises(RuntimeError, match="Required OpenGrep analysis failed"):
             analyze_pull_request_payload(request)
+
+
+def test_combined_route_strips_advisory_model_patch_after_triage(monkeypatch):
+    request = _request()
+
+    def triage(findings, *_args):
+        return [{**finding, "remediation_patch": "model_generated_code()"} for finding in findings]
+
+    monkeypatch.setattr(main, "triage_findings", triage)
+    with patch("main.run_opengrep_with_limitations", return_value=([], [])):
+        result = analyze_pull_request_payload(request)
+
+    assert result["findings"]
+    assert all(finding.get("remediation_patch") == "" for finding in result["findings"])

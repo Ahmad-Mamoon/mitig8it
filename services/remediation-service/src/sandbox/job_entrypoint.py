@@ -232,7 +232,7 @@ def apply_network_isolation() -> None:
 
     It raises on any failure. Callers feature-detect it in a throwaway child first
     (`network_isolation_available`) so a kernel that forbids unprivileged user namespaces
-    degrades to "the probes report what is actually reachable" instead of breaking every check.
+    refuses the repository command before it can execute.
     """
     libc = ctypes.CDLL("libc.so.6", use_errno=True)
     uid, gid = os.getuid(), os.getgid()
@@ -244,31 +244,17 @@ def apply_network_isolation() -> None:
     _bring_loopback_up()
 
 
-def network_isolation_available() -> bool:
-    """Tries the namespace once in a throwaway child, so a failure costs no check."""
+def network_isolation_available(preexec: Callable[[], None] | None = None) -> bool:
+    """Tries the check user's namespace in a throwaway child before running repository code."""
     pid = os.fork()
     if pid == 0:  # pragma: no cover - the child never returns to the test process.
         try:
-            apply_network_isolation()
+            (preexec or apply_network_isolation)()
         except (OSError, ValueError):
             os._exit(1)
         os._exit(0)
     _, status = os.waitpid(pid, 0)
     return os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
-
-
-def disable_dns_resolution() -> str:
-    """Empties `/etc/resolv.conf` while this process is still privileged enough to do it.
-
-    Cloud Run's filesystem is a writable overlay, so this removes every configured resolver
-    for the whole container, including the check. It is a real control and an independent one:
-    it holds even where an unprivileged user namespace is unavailable.
-    """
-    try:
-        Path("/etc/resolv.conf").write_text("", encoding="utf-8")
-    except OSError as error:
-        return f"unavailable:{type(error).__name__}"
-    return "cleared"
 
 
 PROBE_PROGRAM = """
@@ -308,6 +294,8 @@ def run_probes(runner: Callable[[list[str]], subprocess.CompletedProcess[str]]) 
         completed = runner(argv)
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         return {probe["target"]: unreachable(f"probe_failed:{type(error).__name__}") for probe in PROBES}
+    if completed.returncode != 0:
+        return {probe["target"]: unreachable("probe_process_failed") for probe in PROBES}
     try:
         measured = json.loads(completed.stdout or "")
     except ValueError:
@@ -318,6 +306,15 @@ def run_probes(runner: Callable[[list[str]], subprocess.CompletedProcess[str]]) 
         probe["target"]: measured.get(probe["target"]) or unreachable("probe_missing")
         for probe in PROBES
     }
+
+
+def probes_denied(probes: Any) -> bool:
+    """Only explicit denial for every required target permits repository code to run."""
+    return isinstance(probes, dict) and all(
+        isinstance(probes.get(probe["target"]), dict)
+        and probes[probe["target"]].get("reached") is False
+        for probe in PROBES
+    )
 
 
 # --------------------------------------------------------------------------------------
@@ -390,7 +387,7 @@ def run_check(
     except subprocess.TimeoutExpired:
         return {"completed": False, "timed_out": True, "exit_code": None, "output": "", "output_truncated": False,
                 "duration_ms": round((time.monotonic() - started) * 1000), "reason_code": "check_timed_out"}
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
         return {"completed": False, "timed_out": False, "exit_code": None, "output": "", "output_truncated": False,
                 "duration_ms": round((time.monotonic() - started) * 1000),
                 "reason_code": f"check_not_executable:{type(error).__name__}"}
@@ -523,8 +520,10 @@ def execute_task(
 
     try:
         entry = pwd.getpwnam(config["check_user"])
+        if entry.pw_uid == 0 or entry.pw_uid == os.geteuid():
+            raise ValueError("the check must use a separate non-root identity")
         _chown_tree(workspace, entry.pw_uid, entry.pw_gid)
-    except (KeyError, OSError) as error:
+    except (KeyError, OSError, ValueError) as error:
         # Without the separate user the check would run as this process's identity, which
         # holds the nonce and the job's credentials. That is not a sandbox, so the task
         # reports it instead of quietly running the check anyway.
@@ -532,10 +531,17 @@ def execute_task(
                 "duration_ms": 0, "timed_out": False, "exit_code": None, "output": "", "output_truncated": False,
                 "probes": {probe["target"]: unreachable("check_user_unavailable") for probe in PROBES}}
 
-    base["runner"]["dns_resolution"] = disable_dns_resolution()
-    isolate = network_isolation_available() if isolate_network is None else isolate_network
+    # Keep the trusted task's resolver intact for the signed-result upload. Every probe and
+    # repository command must instead use its private network namespace, so neither can reach
+    # the container resolver. Clearing /etc/resolv.conf globally would also break GCS transport.
+    base["runner"]["dns_resolution"] = "isolated_by_network_namespace"
+    preexec = demote(config["check_user"], True)
+    isolate = network_isolation_available(preexec) if isolate_network is None else isolate_network
     base["runner"]["network_namespace"] = "applied" if isolate else "unavailable"
-    preexec = demote(config["check_user"], isolate)
+    if not isolate:
+        return {**base, "completed": False, "reason_code": "sandbox_network_namespace_unavailable",
+                "duration_ms": 0, "timed_out": False, "exit_code": None, "output": "", "output_truncated": False,
+                "probes": {probe["target"]: unreachable("network_namespace_unavailable") for probe in PROBES}}
 
     runner = probe_runner or (
         lambda argv: subprocess.run(  # noqa: S603 - fixed argv built in this module.
@@ -544,6 +550,11 @@ def execute_task(
         )
     )
     probes = run_probes(runner)
+
+    if not probes_denied(probes):
+        return {**base, "completed": False, "reason_code": "sandbox_network_not_denied",
+                "duration_ms": 0, "timed_out": False, "exit_code": None, "output": "", "output_truncated": False,
+                "probes": probes}
 
     result = check_runner(list(check["argv"]), workspace, float(check.get("timeout_seconds") or 60), preexec)
     return {**base, **result, "probes": probes}

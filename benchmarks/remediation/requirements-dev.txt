@@ -1,0 +1,2 @@
+# Optional: only needed for dev_eval.py --upload. Never a production dependency.
+langsmith==0.14.1

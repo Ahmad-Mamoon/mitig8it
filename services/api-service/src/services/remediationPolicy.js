@@ -1,3 +1,5 @@
+const qualityRelease = require('../quality-release.json');
+
 const DEFAULT_POLICY = Object.freeze({
   version: 'remediation-v1-disabled', max_files: 5, max_changed_lines: 200,
   max_attempts: 3, max_tool_calls: 20, max_context_tokens: 32000,
@@ -77,6 +79,7 @@ function getPolicy() {
     enabled: flagEnv('REMEDIATION_ENABLED'),
     generate_enabled: flagEnv('REMEDIATION_GENERATE_ENABLED'),
     publish_enabled: flagEnv('REMEDIATION_PUBLISH_ENABLED'),
+    release_evidence_ready: qualityRelease.schema_version === 'v1' && qualityRelease.remediation_release_verified === true,
     policy_version: process.env.REMEDIATION_POLICY_VERSION || DEFAULT_POLICY.version,
     sandbox_image_digest: sandboxImage,
     verification_checks: verificationChecks,
@@ -102,11 +105,11 @@ function capabilities() {
   const policy = getPolicy();
   return {
     generate: policy.enabled && policy.generate_enabled && policy.repair_service_configured,
-    publish: policy.enabled && policy.publish_enabled && policy.repair_service_configured,
+    publish: policy.enabled && policy.publish_enabled && policy.repair_service_configured && policy.release_evidence_ready,
     // Generation after analysis is only useful when the result can be published under
     // the findings, so it requires both flags and both dependencies.
     auto_generate: policy.enabled && policy.generate_enabled && policy.publish_enabled
-      && policy.repair_service_configured && policy.github_write_configured,
+      && policy.repair_service_configured && policy.github_write_configured && policy.release_evidence_ready,
   };
 }
 
@@ -121,9 +124,11 @@ function capabilityReasons() {
   };
   return {
     generate: reason(policy.generate_enabled, policy.repair_service_configured),
-    publish: reason(policy.publish_enabled, policy.repair_service_configured),
+    publish: reason(policy.publish_enabled, policy.repair_service_configured)
+      || (!policy.release_evidence_ready ? 'release_evidence_missing' : null),
     auto_generate: reason(policy.generate_enabled && policy.publish_enabled,
-      policy.repair_service_configured && policy.github_write_configured),
+      policy.repair_service_configured && policy.github_write_configured)
+      || (!policy.release_evidence_ready ? 'release_evidence_missing' : null),
   };
 }
 
@@ -134,6 +139,7 @@ function capabilityReport() {
   report.development_verification_allowed = allowDevelopmentVerification();
   report.isolated_job_verification_allowed = allowIsolatedJobVerification();
   report.static_assertion_verification_allowed = allowStaticAssertionVerification();
+  report.release_evidence_ready = getPolicy().release_evidence_ready;
   // Weakest first, so a consumer ranking or explaining levels reads the order from the report
   // rather than hard-coding one of its own.
   report.verification_levels = [...VERIFICATION_LEVEL_ORDER];

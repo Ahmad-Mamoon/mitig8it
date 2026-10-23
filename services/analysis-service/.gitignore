@@ -22,6 +22,7 @@ build/
 # Google Cloud credentials - NEVER commit these!
 credentials/
 *.json
+!src/publication-policy.json
 !requirements.json
 # Checked-in data the service reads at runtime, not a credential. dependency_diff.py needs it.
 !src/data/top_packages.json

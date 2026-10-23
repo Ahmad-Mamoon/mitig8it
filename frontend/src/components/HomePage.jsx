@@ -19,9 +19,9 @@ import ProductSurface from './ProductSurface'
 import PullRequestReviewPreview from './PullRequestReviewPreview'
 
 const heroBullets = [
-  'Inline on the risky line',
-  'Fix proven by a regression test',
-  'Nothing merges without you',
+  'High-confidence findings on the risky line',
+  'Evidence-backed fixes when proof passes',
+  'Explicit abstention when proof does not pass',
 ]
 
 const steps = [
@@ -54,7 +54,7 @@ const liveSurface = [
   {
     title: 'Verified fixes',
     status: 'live',
-    description: 'Each fix proven by a generated regression test.',
+    description: 'A fix is published only when its configured evidence policy passes.',
   },
   {
     title: 'One-click apply',
@@ -92,7 +92,7 @@ const HomePage = () => {
             <div className="mx-auto max-w-4xl text-center">
               <span className="inline-flex items-center gap-2 rounded-full border border-neutral-800 px-3 py-1 text-xs font-medium text-neutral-400">
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                GitHub App · Security review with verified fixes
+                GitHub App · Security review with evidence-backed fixes
               </span>
 
               <h1 className="mt-6 text-balance text-4xl font-bold leading-[1.05] tracking-tight text-white sm:text-5xl lg:text-[3.5rem]">
@@ -101,15 +101,15 @@ const HomePage = () => {
               </h1>
 
               <p className="mx-auto mt-6 max-w-xl text-base leading-7 text-neutral-400 sm:text-lg sm:leading-8">
-                Mitig8it finds exploitable code in every pull request, proves a fix, and posts it as
-                a one-click suggestion.
+                Mitig8it reviews changed code for high-confidence security issues. When it can prove
+                a fix, it posts a one-click suggestion; otherwise it records why it abstained.
               </p>
 
               <div className="mt-8">
                 <CtaPair user={user} onLogin={loginWithGitHub} />
               </div>
 
-              <ul className="mt-8 flex flex-wrap justify-center gap-x-6 gap-y-3 text-sm text-neutral-500">
+              <ul className="mt-8 flex flex-wrap justify-center gap-x-6 gap-y-3 text-sm text-neutral-400">
                 {heroBullets.map((item) => (
                   <li key={item} className="inline-flex items-center gap-2">
                     <Check className="h-4 w-4 text-emerald-400" aria-hidden="true" />
@@ -125,9 +125,9 @@ const HomePage = () => {
         <section className="mx-auto max-w-6xl px-4 pt-14 sm:px-6 sm:pt-16 lg:px-8">
           <figure className="m-0">
             <PullRequestReviewPreview />
-            <figcaption className="mt-4 text-center text-sm text-neutral-500">
-              Mirrors a real review on a test pull request. Nothing here is mocked up beyond the
-              layout.
+            <figcaption className="mt-4 text-center text-sm text-neutral-400">
+              A representative review built from the same finding, suggestion, and evidence fields
+              the GitHub integration publishes. See Examples for a captured pull request.
             </figcaption>
           </figure>
         </section>
@@ -142,7 +142,7 @@ const HomePage = () => {
                 <span className="flex h-10 w-10 items-center justify-center rounded-full border border-emerald-400/25 bg-emerald-400/10">
                   <Icon className="h-4 w-4 text-emerald-400" aria-hidden="true" />
                 </span>
-                <p className="mt-4 font-mono text-xs text-neutral-600">{number}</p>
+                <p className="mt-4 font-mono text-xs text-neutral-400">{number}</p>
                 <h3 className="mt-1 text-base font-semibold text-white">{title}</h3>
                 <p className="mt-1 text-sm leading-6 text-neutral-400">{line}</p>
               </div>

@@ -12,8 +12,9 @@ artifact_kms_key_name                   = "projects/replace-with-existing-projec
 # The Cloud Run Jobs sandbox (docs/runbooks/sandbox-cloud-run-job.md). Default off; enabling it
 # creates two buckets, a job identity, an isolated VPC, and the job itself. The image below is
 # the placeholder the first apply uses; the runbook's build step replaces it with a real digest.
-enable_cloud_run_job_sandbox      = false
-sandbox_bucket_prefix             = "replace-with-globally-unique-sandbox-prefix"
-sandbox_job_name                  = "codesentry-remediation-sandbox"
-sandbox_subnet_cidr               = "10.90.0.0/24"
-remediation_service_account_email = "codesentry-remediation@replace-with-existing-project-id.iam.gserviceaccount.com"
+enable_cloud_run_job_sandbox           = false
+sandbox_bucket_prefix                 = "replace-with-globally-unique-sandbox-prefix"
+sandbox_job_name                      = "codesentry-remediation-sandbox"
+sandbox_subnet_cidr                   = "10.90.0.0/24"
+remediation_service_account_email     = "codesentry-remediation@replace-with-existing-project-id.iam.gserviceaccount.com"
+sandbox_release_service_account_email = "codesentry-deployer@replace-with-existing-project-id.iam.gserviceaccount.com"

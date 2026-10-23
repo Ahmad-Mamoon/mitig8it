@@ -24,7 +24,11 @@ const { createApp } = require('../src/app');
 
 describe('webhook route', () => {
   beforeEach(() => {
-    jest.clearAllMocks();
+    // Reset implementations as well as call history. Several cases deliberately
+    // replace the transaction implementation; retaining one between cases makes
+    // the deduplication contract depend on suite execution order.
+    jest.resetAllMocks();
+    verifyWebhookSignature.mockReturnValue(false);
   });
 
   test('rejects invalid webhook signature', async () => {

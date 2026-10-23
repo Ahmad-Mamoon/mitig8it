@@ -2,6 +2,13 @@
 
 Benchmark dataset for evaluating LLM models on security vulnerability detection. Use it to compare candidate models before integrating them into the Mitig8it analysis pipeline.
 
+Rule publication is separately enforced by the [rule quality gate](../../benchmarks/rule-quality/README.md):
+new, changed, or re-enabled rules require at least 100 reviewed holdout predictions,
+no unresolved judgments, and a two-sided 95% Wilson lower precision bound of at
+least 0.95. `make bench-rule-quality` runs the same check enforced in CI and before
+publishing the release image. Existing rules are explicitly reported as legacy
+exceptions, not statistically validated detections.
+
 ## Structure
 
 ```
@@ -31,27 +38,28 @@ benchmarks/
 ## Running
 
 ```bash
-# Install dependency
+# Install the SDK for the provider you are explicitly evaluating.
 pip install anthropic openai
 
 # Run against an Anthropic model
 export ANTHROPIC_API_KEY=sk-...
-python benchmarks/eval.py --provider anthropic --model claude-sonnet-4-6
-python benchmarks/eval.py --provider anthropic --model claude-haiku-4-5-20251001
-python benchmarks/eval.py --provider anthropic --model claude-opus-4-6
+python benchmarks/eval.py --provider anthropic --model <pinned-model-id> \
+  --input-price <usd-per-million> --output-price <usd-per-million>
 
 # Run against an OpenAI model
 export OPENAI_API_KEY=sk-...
-python benchmarks/eval.py --provider openai --model gpt-4o-mini
+python benchmarks/eval.py --provider openai --model <pinned-model-id> \
+  --reasoning-effort medium \
+  --input-price <usd-per-million> --output-price <usd-per-million>
 
-# Run multiple OpenAI models
-python benchmarks/eval.py --provider openai --models gpt-4o-mini,gpt-4o,gpt-5
-
-# Run all supported models
-python benchmarks/eval.py --all
+# Reuse an existing gitignored development key without sourcing the file as shell code.
+python benchmarks/eval.py --provider openai --model <pinned-model-id> \
+  --env-file benchmarks/remediation/.env --api-key-env REPAIR_LLM_API_KEY \
+  --input-price <usd-per-million> --output-price <usd-per-million>
 
 # Limit samples for quick test
-python benchmarks/eval.py --provider openai --model gpt-4o-mini --samples 5
+python benchmarks/eval.py --provider openai --model <pinned-model-id> --samples 5 \
+  --max-requests 5 --input-price <usd-per-million> --output-price <usd-per-million>
 ```
 
 ## Metrics
@@ -60,8 +68,16 @@ The eval script measures:
 - **Precision**: of flagged code, how much is actually vulnerable
 - **Recall**: of all vulnerabilities, how many were caught
 - **F1 Score**: harmonic mean of precision and recall
-- **Latency**: average response time per snippet
+- **Latency**: p50 and p95 response time per snippet
 - **Cost**: total and per-scan API cost
+
+Provider and parse failures stay in the planned-sample denominator and make the
+command exit nonzero. Prices are required inputs rather than stale constants.
+Reports record dataset and prompt digests, Wilson intervals, valid-response rate,
+and limitations. This 42-case synthetic snippet set compares candidate models; it
+does not establish production detector or recommendation accuracy. Run candidates
+on the same pinned inputs, then promote only a model that meets the product's
+quality, latency, and cost thresholds on independently reviewed holdout traffic.
 
 ## Adding samples
 

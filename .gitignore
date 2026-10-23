@@ -59,6 +59,8 @@ mongo_data/
 # IDE
 .vscode/
 .idea/
+.claude/
+.playwright-mcp/
 *.swp
 *.swo
 *~

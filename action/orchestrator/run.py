@@ -25,6 +25,16 @@ from . import analysis, github_api, pr_scope, repo_config
 CHECK_RUN_NAME = "Mitig8it Security Review"
 FAIL_ON_CHOICES = ("none", "high", "critical")
 
+
+def fix_publication_ready() -> bool:
+    root = Path(os.environ.get("MITIG8IT_GITHUB_SERVICE_ROOT")
+                or Path(__file__).resolve().parents[2] / "services/github-service")
+    try:
+        release = json.loads((root / "src/quality-release.json").read_text(encoding="utf-8"))
+        return release.get("schema_version") == "v1" and release.get("remediation_release_verified") is True
+    except (OSError, ValueError, AttributeError):
+        return False
+
 # A workflow that grants write access to file contents has handed the action the power to change
 # the code it is reviewing. The action does not want it and will not run with it, because the
 # claim that it cannot alter your repository has to be enforced rather than promised.
@@ -695,7 +705,10 @@ def _run() -> int:
     )
 
     fix_sections: List[Dict[str, Any]] = []
-    if post_fixes and findings:
+    fixes_withheld = post_fixes and bool(findings) and not fix_publication_ready()
+    if fixes_withheld:
+        log("Fix publication withheld: independent release evidence is missing.")
+    if post_fixes and findings and not fixes_withheld:
         fix_sections = generate_fixes(
             reader=reader,
             repository=repository,
@@ -746,6 +759,8 @@ def _run() -> int:
     )
 
     log("Publishing.")
+    if fixes_withheld:
+        request["fixesWithheldReason"] = "independent_release_evidence_missing"
     results = run_publisher(request)
     errors = results.get("errors") or []
     for error in errors:
@@ -778,10 +793,13 @@ def _run() -> int:
         f"{counts['high']} high, {plural(len(fix_sections), 'fix suggestion')}.\n\n"
         + (f"{exclusion_line}.\n\n" if exclusion_line else "")
         + (
-            "Fixes were generated with model assistance.\n"
-            if model_configured
-            else "No model key was configured, so only template fixes were produced and "
-            "nothing left this runner.\n"
+            "Fix suggestions were withheld because independent release evidence is missing.\n"
+            if fixes_withheld else (
+                "Fixes were generated with model assistance.\n"
+                if model_configured
+                else "No model key was configured, so only template fixes were produced and "
+                "nothing left this runner.\n"
+            )
         )
         # The job summary is where a maintainer looks when a run went wrong, so it carries the
         # digest as well as the label. The review body carries only the label, because a

@@ -1,5 +1,9 @@
 # Remediation benchmark seed
 
+For the local observe → evaluate → improve loop and optional LangSmith experiments, see
+[Development evaluation](DEVELOPMENT.md). Start with `make dev-eval`; no model key or cloud
+deployment is required.
+
 This is an offline seed harness for repository-level repairs. It is deliberately not a quality
 claim: it contains eighty-one authored fixtures, while the release manifest requires 120
 externally reviewed cases before a release gate can pass.

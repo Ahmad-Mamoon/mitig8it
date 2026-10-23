@@ -1,0 +1,74 @@
+name: Smoke internal gRPC boundaries
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: Environment whose API should prove both authenticated gRPC dependencies
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Resolve environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          case '${{ inputs.environment }}' in
+            production) SERVICE='codesentry-api'; SECRET_SUFFIX='' ;;
+            staging) SERVICE='codesentry-api-staging'; SECRET_SUFFIX='-staging' ;;
+            *) echo 'Unknown environment: ${{ inputs.environment }}' >&2; exit 1 ;;
+          esac
+          {
+            echo "SERVICE=$SERVICE"
+            echo "SECRET_SUFFIX=$SECRET_SUFFIX"
+          } >> "$GITHUB_ENV"
+
+      - name: Authenticate to Google Cloud (Workload Identity)
+        if: vars.GCP_WORKLOAD_IDENTITY_PROVIDER != ''
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: '${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}'
+          service_account: '${{ vars.GCP_SERVICE_ACCOUNT_EMAIL }}'
+
+      - name: Authenticate to Google Cloud (service account key)
+        if: vars.GCP_WORKLOAD_IDENTITY_PROVIDER == ''
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          credentials_json: '${{ secrets.GCP_SA_KEY }}'
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
+        with:
+          project_id: '${{ vars.GCP_PROJECT_ID }}'
+
+      - name: Prove API to Analysis and GitHub application authentication
+        shell: bash
+        run: |
+          set -euo pipefail
+          INTERNAL_SECRET=$(gcloud secrets versions access latest \
+            --project '${{ vars.GCP_PROJECT_ID }}' \
+            --secret="codesentry-internal-secret${SECRET_SUFFIX}")
+          test -n "$INTERNAL_SECRET"
+          URL=$(gcloud run services describe "$SERVICE" \
+            --region '${{ vars.GCP_REGION }}' \
+            --project '${{ vars.GCP_PROJECT_ID }}' \
+            --format='value(status.url)')
+          BODY=$(curl -sfS --connect-timeout 15 --max-time 60 \
+            -H "x-internal-secret: ${INTERNAL_SECRET}" \
+            "${URL}/internal/dependencies")
+          jq -e '
+            .status == "ok"
+            and .checks.analysis == "ok"
+            and .checks.github == "ok"
+          ' <<< "$BODY" >/dev/null
+          echo "Authenticated API → Analysis and API → GitHub checks passed."

@@ -19,7 +19,17 @@ The repair API/worker persist durable request/result artifacts in CMEK-protected
 
 In the production shape, the repair service requires `REMEDIATION_SERVICE_INTERNAL_SECRET`, `REPAIR_LLM_BASE_URL`, `REPAIR_LLM_API_KEY`, `REPAIR_LLM_MODEL`, `SANDBOX_BROKER_URL`, `SANDBOX_BROKER_TOKEN`, `SANDBOX_BROKER_ATTESTATION_SECRET`, `SANDBOX_BROKER_ATTESTATION_KEY_ID`, `REMEDIATION_DATABASE_URL`, `REMEDIATION_ARTIFACT_BUCKET`, and `REMEDIATION_ARTIFACT_KMS_KEY`.
 
-That shape is not what is deployed today. `deploy-remediation-cloudrun.yml` supplies exactly four values from Secret Manager, `codesentry-remediation-internal-secret`, `codesentry-repair-llm-base-url`, `codesentry-repair-llm-api-key`, and `codesentry-repair-llm-model`, and sets the rest as plain environment: `REMEDIATION_EXECUTION_BACKEND=local`, `REMEDIATION_LOCAL_STATE_DIR=/tmp/remediation`, `REMEDIATION_WORKER_INPROCESS=true`, `SANDBOX_BROKER_MODE=inprocess`, `SANDBOX_DRIVER=local`, and both attestation gates false. The four `SANDBOX_BROKER_*` settings are not read in that mode, and the service has no database, no artifact bucket, and no KMS key. The API service receives the same `codesentry-remediation-internal-secret`; the three `REPAIR_LLM_*` secrets are never placed on the API.
+That full GKE shape is not what the Cloud Run workflow deploys. It supplies exactly
+four values from Secret Manager, `codesentry-remediation-internal-secret`,
+`codesentry-repair-llm-base-url`, `codesentry-repair-llm-api-key`, and
+`codesentry-repair-llm-model`, and uses a local control-plane store and in-process
+worker/broker. The ordered production workflow explicitly selects
+`SANDBOX_DRIVER=cloud_run_job`; a direct manual component run defaults to preserving the
+deployed driver. Every Cloud Run Job release must pass a fresh isolation smoke and bind
+its receipt to the commit, immutable image, identities, buckets, and job generation.
+Both attestation gates remain false because this is not the GKE/gVisor trust shape. The
+API receives the same remediation internal secret; the three provider secrets are never
+placed on the API.
 
 The broker requires `SANDBOX_BROKER_TOKEN`, `SANDBOX_BROKER_ATTESTATION_SECRET`, `SANDBOX_BROKER_ATTESTATION_KEY_ID`, `SANDBOX_BROKER_ID`, `SANDBOX_K8S_NAMESPACE`, `SANDBOX_K8S_SERVICE_ACCOUNT=sandbox-no-access`, `SANDBOX_K8S_RUNTIME_CLASS=gvisor`, `SANDBOX_ALLOWED_IMAGE_DIGESTS`, and initially `SANDBOX_NETWORK_POLICY_ATTESTED=false` plus `SANDBOX_NODE_LIMITS_ATTESTED=false`.
 

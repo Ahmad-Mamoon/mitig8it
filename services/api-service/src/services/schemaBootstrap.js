@@ -1,5 +1,7 @@
 const logger = require('../utils/logger');
 const { applyMigrations, getPendingMigrations } = require('./migrationRunner');
+const { pool } = require('../config/database');
+const { verifyRuntimeDatabaseRole } = require('./runtimeDatabaseRole');
 
 function shouldAutoMigrate() {
   if (process.env.AUTO_MIGRATE === 'true') return true;
@@ -8,6 +10,12 @@ function shouldAutoMigrate() {
 }
 
 async function ensureDatabaseSchema() {
+  if (process.env.NODE_ENV === 'production') {
+    if (shouldAutoMigrate()) {
+      throw new Error('Production runtime cannot run migrations; use the separate migration credential');
+    }
+    await verifyRuntimeDatabaseRole(pool);
+  }
   if (shouldAutoMigrate()) {
     const applied = await applyMigrations();
     logger.info('API database migrations applied', { applied: applied.length });

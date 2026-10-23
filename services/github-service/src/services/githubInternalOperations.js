@@ -2,6 +2,7 @@ const axios = require('axios');
 // Authentication and self-recognition go through the identity provider, which defaults to the
 // GitHub App. See githubIdentity.js for what a different provider may change.
 const githubIdentity = require('./githubIdentity');
+const qualityPublication = require('./qualityPublication');
 
 class OperationError extends Error {
   constructor(message, statusCode = 500, detail = null) {
@@ -16,6 +17,7 @@ function badRequest(message) {
 }
 
 function externalError(message, error) {
+  if (error.code === 'REMEDIATION_RELEASE_EVIDENCE_MISSING') return error;
   return new OperationError(message, 502, error.response?.data || error.message);
 }
 
@@ -246,6 +248,8 @@ async function fetchFileContents({ repository_full_name, installation_id, ref, p
 }
 
 async function submitPullRequestReview({ owner, repo, pr_number, installation_id, commit_sha, body, event, comments }) {
+  qualityPublication.assertReviewBodyReady(body);
+  for (const comment of comments || []) qualityPublication.assertReviewBodyReady(comment.body);
   if (!owner || !repo || !pr_number || !installation_id || !commit_sha || !body || !event) {
     throw badRequest('owner, repo, pr_number, installation_id, commit_sha, body, event are required');
   }
@@ -310,6 +314,7 @@ async function submitPullRequestReview({ owner, repo, pr_number, installation_id
 }
 
 async function postInlineComment({ owner, repo, pr_number, installation_id, commit_sha, path, line, body }) {
+  qualityPublication.assertReviewBodyReady(body);
   if (!owner || !repo || !pr_number || !installation_id || !commit_sha || !path || !line || !body) {
     throw badRequest('owner, repo, pr_number, installation_id, commit_sha, path, line and body are required');
   }
@@ -334,7 +339,12 @@ async function postInlineComment({ owner, repo, pr_number, installation_id, comm
           // match is the fingerprint check, and the head check above is the head check:
           // a different fingerprint finds a different comment, and a moved head has
           // already refused this publication.
-          const nextBody = withPreservedFixBlocks(body, comment.body);
+          // Preserve an existing verified section only while this build still has
+          // independent release admission. If evidence is revoked, re-analysis
+          // removes the stale one-click fix instead of keeping it reachable.
+          const nextBody = qualityPublication.remediationPublicationReady()
+            ? withPreservedFixBlocks(body, comment.body)
+            : body;
           if (comment.body !== nextBody) await githubAnalysisWrite('patch',
             `https://api.github.com/repos/${owner}/${repo}/pulls/comments/${comment.id}`, token, { body: nextBody });
           return { comment_id: comment.id, url: comment.html_url, success: true };
@@ -753,6 +763,7 @@ function residualReportMarker(externalId) {
 // for the external id, which is updated in place; another author's comment carrying
 // the same text is never edited. It reuses the summary comment publisher.
 async function publishRemediationComment(payload) {
+  qualityPublication.assertReviewBodyReady(payload.body);
   const envelope = validateActionEnvelope(payload);
   const externalId = requireString(payload.external_id, 'external_id', 255);
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,254}$/.test(externalId)) throw badRequest('Invalid external_id');
@@ -808,6 +819,11 @@ const EXTRA_HUNK_LIMIT = 10;
 const FIX_BLOCK_PATTERN = /\n*<!-- mitig8it-fix:[^>]+ -->[\s\S]*?<!-- \/mitig8it-fix:[^>]+ -->/g;
 
 function stripFixBlocks(body) { return String(body || '').replace(FIX_BLOCK_PATTERN, '').replace(/\s+$/, ''); }
+
+function stripProposalCode(body) {
+  return String(body || '').replace(/^[ \t]*(?:`{3,}|~{3,})[^\n]*\r?\n[\s\S]*?^[ \t]*(?:`{3,}|~{3,})[ \t]*$/gm,
+    'Code proposal withheld pending independent repair verification.');
+}
 
 // The fix blocks of an existing comment, trimmed of the blank lines the pattern eats
 // around them, in the order they appear.
@@ -945,6 +961,7 @@ function validateFixSection(raw, index) {
     path: typeof raw.path === 'string' ? raw.path.slice(0, 1024) : '',
     finding_line: Number.isInteger(Number(raw.finding_line)) ? Number(raw.finding_line) : 0,
     hunk: null,
+    has_additional_changes: Array.isArray(raw.extra_hunks) && raw.extra_hunks.length > 0,
     unified_diff: typeof raw.unified_diff === 'string' ? raw.unified_diff.slice(0, 20000) : '',
     not_suggestable_reason: typeof raw.not_suggestable_reason === 'string' ? raw.not_suggestable_reason : '',
     stated_intent: typeof raw.stated_intent === 'string' ? raw.stated_intent.slice(0, 2000) : '',
@@ -955,7 +972,7 @@ function validateFixSection(raw, index) {
     skipped_reason: skipped,
     // The finding comment to create when none carries the marker. It is trimmed of any
     // fix blocks so a stale copy can never smuggle a section past the candidate markers.
-    finding_body: typeof raw.finding_body === 'string' ? stripFixBlocks(raw.finding_body.slice(0, FINDING_BODY_LIMIT)) : '',
+    finding_body: typeof raw.finding_body === 'string' ? stripProposalCode(stripFixBlocks(raw.finding_body.slice(0, FINDING_BODY_LIMIT))) : '',
     finding_ids: findingIds,
     covered_by: typeof raw.covered_by === 'string' ? raw.covered_by.replace(/[<>`]/g, '').slice(0, 300) : '',
   };
@@ -968,7 +985,7 @@ function parseHunk(hunk) {
   if (hunk && typeof hunk === 'object' && Number.isInteger(Number(hunk.start_line)) && Number(hunk.start_line) > 0
     && Number.isInteger(Number(hunk.end_line)) && Number(hunk.end_line) >= Number(hunk.start_line)
     && Array.isArray(hunk.replacement_lines) && hunk.replacement_lines.length <= FIX_LINE_LIMIT
-    && hunk.replacement_lines.every((line) => typeof line === 'string')) {
+    && hunk.replacement_lines.every((line) => typeof line === 'string' && !/[\r\n]/.test(line))) {
     return {
       start_line: Number(hunk.start_line), end_line: Number(hunk.end_line),
       original_lines: Array.isArray(hunk.original_lines) ? hunk.original_lines.filter((line) => typeof line === 'string') : [],
@@ -996,17 +1013,26 @@ async function suggestionFor(section, comment, readFileLines) {
   const hunk = section.hunk;
   if (!hunk) return { ok: false, reason: NOT_SUGGESTABLE_TEXT[section.not_suggestable_reason] || NOT_SUGGESTABLE_TEXT.no_line_change };
   const commentEnd = Number(comment.line);
-  if (!Number.isInteger(commentEnd) || commentEnd < 1 || (comment.side && comment.side !== 'RIGHT')) {
+  if (!Number.isInteger(commentEnd) || commentEnd < 1 || (comment.side && comment.side !== 'RIGHT')
+      || (comment.start_side && comment.start_side !== 'RIGHT')) {
     return { ok: false, reason: NOT_SUGGESTABLE_TEXT.comment_outdated };
   }
   const commentStart = Number.isInteger(Number(comment.start_line)) && Number(comment.start_line) > 0 ? Number(comment.start_line) : commentEnd;
+  if (comment.path && comment.path !== section.path) {
+    return { ok: false, reason: 'the finding comment is anchored to a different file' };
+  }
+  const fileLines = await readFileLines(section.path);
+  if (!fileLines || fileLines.length < hunk.end_line) return { ok: false, reason: NOT_SUGGESTABLE_TEXT.file_unavailable };
+  if (hunk.original_lines.length !== hunk.end_line - hunk.start_line + 1
+      || hunk.original_lines.some((line, index) => line !== fileLines[hunk.start_line - 1 + index])) {
+    return { ok: false, reason: 'the verified original lines do not match the pull request head' };
+  }
   if (hunk.start_line < commentStart || hunk.end_line > commentEnd) {
     const range = commentStart === commentEnd ? `line ${commentEnd}` : `lines ${commentStart}-${commentEnd}`;
     return { ok: false, reason: `the fix changes lines ${hunk.start_line}-${hunk.end_line}, and this comment can only carry a suggestion for ${range}` };
   }
   let lines = hunk.replacement_lines;
   if (hunk.start_line !== commentStart || hunk.end_line !== commentEnd) {
-    const fileLines = await readFileLines(section.path);
     if (!fileLines || fileLines.length < commentEnd) return { ok: false, reason: NOT_SUGGESTABLE_TEXT.file_unavailable };
     lines = [...fileLines.slice(commentStart - 1, hunk.start_line - 1), ...hunk.replacement_lines, ...fileLines.slice(hunk.end_line, commentEnd)];
   }
@@ -1038,26 +1064,8 @@ function verifiedLine(section) {
   return `Verified: regression test failed on the original code and passed with this change (${where}).`;
 }
 
-function diffFence(diff) {
-  const fence = diff.includes('```') ? '~~~' : '```';
-  return `${fence}diff\n${diff.replace(/\s+$/, '')}\n${fence}`;
-}
-
 function lineRange(hunk) {
   return hunk.start_line === hunk.end_line ? `line ${hunk.start_line}` : `lines ${hunk.start_line}-${hunk.end_line}`;
-}
-
-const IMPORT_LINE = /^\s*(?:import\s+\S|from\s+\S+\s+import\s+\S|(?:const|let|var)\s+.+?=\s*require\()/;
-
-function addedLines(hunk) {
-  return hunk.replacement_lines.filter((line) => !hunk.original_lines.includes(line));
-}
-
-// A hunk that adds or rewrites nothing but import lines.
-function isImportHunk(hunk) {
-  const added = addedLines(hunk);
-  const removed = hunk.original_lines.filter((line) => !hunk.replacement_lines.includes(line));
-  return added.length > 0 && [...added, ...removed].every((line) => !line.trim() || IMPORT_LINE.test(line));
 }
 
 // The collapsed details under the suggestion: the model's own claim, then what the sandbox
@@ -1093,8 +1101,10 @@ function buildFixSection(section, plan, previewUrl) {
   if (plan.suggestion) {
     lines.push('```suggestion', ...plan.suggestion, '```');
   } else if (!plan.extras.length) {
-    lines.push(section.unified_diff ? diffFence(section.unified_diff) : '_(no diff available)_');
-    lines.push(`Shown as a diff: ${plan.reason}.`);
+    lines.push(`Automatic replacement withheld: ${plan.reason}.`);
+    if (previewUrl) lines.push(`Review the complete repair in [Mitig8it](${previewUrl}).`);
+    lines.push(fixEndMarker(section.candidate_id));
+    return lines.join('\n');
   }
   lines.push(verifiedLine(section));
   lines.push(...plan.notes);
@@ -1121,6 +1131,14 @@ function buildExtraComment(section, hunk, index) {
 // finding comment shows the diff with that reason.
 async function planSection(section, anchor, placement, readFileLines, diffLinesFor) {
   const plan = { suggestion: null, reason: '', notes: [], extras: [] };
+  if (!['independent_sandbox', 'isolated_job'].includes(section.verification_level)) {
+    plan.reason = 'the complete repair has not passed independently executed verification';
+    return plan;
+  }
+  if (section.has_additional_changes || section.extra_hunks.length) {
+    plan.reason = 'the complete repair requires separate edits; a partial suggestion would omit required changes';
+    return plan;
+  }
   if (placement !== 'inline') {
     plan.reason = NOT_SUGGESTABLE_TEXT.line_outside_diff;
     return plan;
@@ -1133,22 +1151,13 @@ async function planSection(section, anchor, placement, readFileLines, diffLinesF
   };
   if (primary.ok) {
     plan.suggestion = primary.lines;
-  } else if (section.hunk && inDiff(section.hunk)) {
+  } else if (section.hunk && inDiff(section.hunk)
+      && !/original lines|different file|unavailable|no longer|code fence/.test(primary.reason)) {
     plan.extras.push(section.hunk);
     plan.notes.push(`The change is suggested in a separate comment on ${lineRange(section.hunk)}.`);
   } else {
     plan.reason = primary.reason;
     return plan;
-  }
-  for (const hunk of section.extra_hunks) {
-    if (inDiff(hunk)) {
-      plan.extras.push(hunk);
-    } else if (isImportHunk(hunk)) {
-      const added = addedLines(hunk).map((line) => `\`${line.trim()}\``).join(' and ');
-      plan.notes.push(`Also add ${added} at ${lineRange(hunk)}, which is outside the pull request diff.`);
-    } else {
-      return { suggestion: null, reason: `the fix also changes ${lineRange(hunk)}, outside the pull request diff`, notes: [], extras: [] };
-    }
   }
   return plan;
 }
@@ -1182,7 +1191,7 @@ function createdFindingBody(section, placement) {
   const location = `\`${section.path}\`${section.finding_line ? ` line ${section.finding_line}` : ''}`;
   return [
     marker,
-    `**Verified fix for ${location}.** This line is not part of the pull request diff, so GitHub does not accept an inline comment on it; the finding and its verified fix are reported here instead.`,
+    `**Repair for ${location}.** This line is not part of the pull request diff, so GitHub does not accept an inline comment on it; the finding and the repair status are reported here instead.`,
     '',
     section.finding_body,
   ].join('\n');
@@ -1195,6 +1204,7 @@ function createdFindingBody(section, placement) {
 // from the section's finding body: on its line when the diff shows that line, else as
 // a pull request comment that says why. Comments by another author are never edited.
 async function publishFindingFixSections(payload) {
+  qualityPublication.assertRemediationPublicationReady();
   const envelope = validateActionEnvelope(payload);
   if (!Array.isArray(payload.sections) || !payload.sections.length || payload.sections.length > FIX_SECTION_LIMIT) {
     throw badRequest(`sections must contain 1 to ${FIX_SECTION_LIMIT} entries`);
@@ -1272,8 +1282,23 @@ async function publishFindingFixSections(payload) {
       if (!byFingerprint.has(section.finding_fingerprint)) byFingerprint.set(section.finding_fingerprint, []);
       byFingerprint.get(section.finding_fingerprint).push(section);
     }
+    const plans = new Map();
+    const offeredCandidates = new Set();
+    for (const section of sections) {
+      if (section.skipped_reason || section.covered_by) continue;
+      const marker = findingMarker(section.finding_fingerprint);
+      const comment = comments.find((item) => item.body?.includes(marker) && (!botLogin || item.user?.login === botLogin));
+      if (!comment && !section.finding_body) continue;
+      const placement = comment || (await diffLinesFor(section.path)).has(section.finding_line) ? 'inline' : 'pull_request';
+      const anchor = comment || { path: section.path, line: section.finding_line, side: 'RIGHT' };
+      const plan = await planSection(section, anchor, placement, readFileLines, diffLinesFor);
+      plans.set(section, plan);
+      if (plan.suggestion || plan.extras.length) offeredCandidates.add(section.candidate_id);
+    }
     const results = [];
-    for (const [fingerprint, group] of byFingerprint) {
+    // Write the actual repair before comments claiming another finding is covered.
+    const groups = [...byFingerprint].sort((a, b) => Number(a[1].every((item) => item.covered_by)) - Number(b[1].every((item) => item.covered_by)));
+    for (const [fingerprint, group] of groups) {
       const marker = findingMarker(fingerprint);
       // Where the sections go: the app's own inline comment carrying the marker; else a
       // comment created on the finding's line when the diff shows it; else the app's own
@@ -1304,10 +1329,15 @@ async function publishFindingFixSections(payload) {
           blocks.push(buildSkippedSection(section));
           Object.assign(result, { candidate_id: '', mode: 'skipped', reason: section.skipped_reason });
         } else if (section.covered_by) {
-          blocks.push(buildCoveredSection(section));
-          Object.assign(result, { mode: 'covered', reason: `fixed together with ${section.covered_by}` });
+          if (offeredCandidates.has(section.candidate_id)) {
+            blocks.push(buildCoveredSection(section));
+            Object.assign(result, { mode: 'covered', reason: `fixed together with ${section.covered_by}` });
+          } else {
+            blocks.push(buildSkippedSection({ ...section, skipped_reason: 'the complete repair could not be published as an atomic suggestion' }));
+            Object.assign(result, { mode: 'skipped', reason: 'complete_repair_withheld' });
+          }
         } else {
-          const plan = await planSection(section, anchor, placement, readFileLines, diffLinesFor);
+          const plan = plans.get(section) || await planSection(section, anchor, placement, readFileLines, diffLinesFor);
           blocks.push(buildFixSection(section, plan, previewUrl));
           const suggested = Boolean(plan.suggestion) || plan.extras.length > 0;
           Object.assign(result, { mode: suggested ? 'suggestion' : 'diff', reason: suggested ? '' : plan.reason });
@@ -1316,10 +1346,13 @@ async function publishFindingFixSections(payload) {
         groupResults.push(result);
         results.push(result);
       }
-      const base = comment ? stripFixBlocks(comment.body) : createdFindingBody(withBody, placement);
+      const base = comment ? stripProposalCode(stripFixBlocks(comment.body)) : createdFindingBody(withBody, placement);
       const body = `${base}\n\n${blocks.join('\n\n')}`;
       if (body.length > 65000) throw new OperationError('Finding comment would exceed the GitHub comment size limit', 422);
-      if (comment && body === comment.body) continue;
+      if (comment && body === comment.body) {
+        await publishExtraComments(envelope, token, fingerprint, comments, botLogin, extraPlans);
+        continue;
+      }
       let response;
       if (!comment && placement === 'inline') {
         response = await createInlineComment({ owner: envelope.owner, repo: envelope.repo, pr_number: envelope.pr_number, token,

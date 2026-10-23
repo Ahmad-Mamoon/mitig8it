@@ -23,6 +23,16 @@ class DriverSelectionError(ValueError):
     pass
 
 
+def validate_driver_kind(kind: str) -> str:
+    if kind not in DRIVER_KINDS:
+        raise DriverSelectionError(f"SANDBOX_DRIVER must be one of {', '.join(DRIVER_KINDS)}")
+    production = any(os.getenv(name, "").strip().lower() in {"production", "prod"}
+                     for name in ("DEPLOY_ENVIRONMENT", "ENVIRONMENT", "NODE_ENV"))
+    if kind == LOCAL_DRIVER and production:
+        raise DriverSelectionError("SANDBOX_DRIVER=local is prohibited in production; configure an isolated sandbox")
+    return kind
+
+
 def selected_driver_kind(default: str = KUBERNETES_DRIVER) -> str:
     """The configured driver, or `default` when `SANDBOX_DRIVER` is unset.
 
@@ -32,14 +42,12 @@ def selected_driver_kind(default: str = KUBERNETES_DRIVER) -> str:
     acquire a cluster one. Either way an explicit `SANDBOX_DRIVER` decides.
     """
     kind = os.getenv("SANDBOX_DRIVER", default).strip().lower() or default
-    if kind not in DRIVER_KINDS:
-        raise DriverSelectionError(f"SANDBOX_DRIVER must be one of {', '.join(DRIVER_KINDS)}")
-    return kind
+    return validate_driver_kind(kind)
 
 
 def build_driver(kind: str | None = None) -> Any:
     """Constructs the selected driver. `local` is development only and says so when it starts."""
-    selected = kind or selected_driver_kind()
+    selected = validate_driver_kind(kind) if kind is not None else selected_driver_kind()
     if selected == LOCAL_DRIVER:
         from .local_driver import LocalSubprocessDriver
 

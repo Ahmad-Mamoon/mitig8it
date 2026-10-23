@@ -232,6 +232,13 @@ jobs:
           pytest tests/test_release.py -q
         working-directory: action
 
+      - name: Rule publication precision gate
+        run: |
+          set -euo pipefail
+          pytest benchmarks/test_quality_gate.py benchmarks/test_production_readiness.py -q
+          python3 -m benchmarks.rule_quality_gate
+          python3 -m benchmarks.production_readiness
+
       - name: actionlint over every workflow
         run: |
           set -euo pipefail

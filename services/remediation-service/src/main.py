@@ -19,6 +19,7 @@ from .executions import (
 )
 from .models import RepairRequest
 from .worker import inprocess_enabled, run_worker_loop
+from .sandbox import validate_sandbox_configuration
 from . import telemetry
 
 logger = logging.getLogger("mitig8it.remediation.api")
@@ -34,6 +35,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     read and write one execution store. Cancellation on shutdown releases the current lease
     rather than publishing under it; the lease then expires and the recovery budget applies.
     """
+    validate_sandbox_configuration()
     task: asyncio.Task[None] | None = None
     if inprocess_enabled():
         logger.warning(

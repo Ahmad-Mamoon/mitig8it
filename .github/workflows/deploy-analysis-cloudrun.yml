@@ -1,10 +1,6 @@
 name: Deploy Analysis (Cloud Run)
 
 on:
-  workflow_run:
-    workflows: ["CI"]
-    types: [completed]
-    branches: [main]
   workflow_dispatch:
     inputs:
       environment:
@@ -17,6 +13,9 @@ on:
       environment:
         type: string
         default: production
+      ref:
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -27,63 +26,30 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  filter:
-    # A workflow_run deploy must come from a push to this repository. The branches
-    # filter above matches the *triggering* run's head branch, so a pull request from
-    # a fork whose branch is named main satisfies it. Without the event and
-    # head_repository checks the deploy job below would check out that fork's commit
-    # and run it with production credentials.
-    if: >-
-      github.event_name != 'workflow_run'
-      || (github.event.workflow_run.conclusion == 'success'
-      && github.event.workflow_run.event == 'push'
-      && github.event.workflow_run.head_repository.full_name == github.repository)
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      deploy: ${{ steps.decide.outputs.deploy }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
-      - name: Path filter
-        id: decide
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Only a CI-triggered deploy is filtered by path. A manual run and a staging
-          # run are explicit requests and always deploy.
-          if [ "${{ github.event_name }}" != "workflow_run" ]; then
-            echo "deploy=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if ! git rev-parse --verify HEAD^ >/dev/null 2>&1; then
-            echo "deploy=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          BASE=$(git rev-parse HEAD^)
-          if git diff --name-only "$BASE" HEAD | grep -qE '^(services/analysis-service/|proto/|\.github/workflows/deploy-analysis-cloudrun\.yml)'; then
-            echo "deploy=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "deploy=false" >> "$GITHUB_OUTPUT"
-          fi
-
   deploy:
-    needs: filter
-    if: needs.filter.outputs.deploy == 'true'
+    if: >-
+      inputs.ref != ''
+      || (inputs.environment == 'production' && github.ref == 'refs/heads/main')
+      || (inputs.environment == 'staging' && github.ref == 'refs/heads/staging')
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    environment: ${{ inputs.environment || 'production' }}
     permissions:
       contents: read
       id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ inputs.ref || github.sha }}
 
       # Everything downstream reads $SERVICE and $SECRET_SUFFIX, so the difference
       # between production and staging lives in exactly one step.
+      - name: Enforce quality evidence before shipping
+        uses: ./.github/actions/quality-readiness
+        with:
+          environment: ${{ inputs.environment || 'production' }}
+          component: analysis
+
       - name: Resolve environment
         shell: bash
         run: |
@@ -164,7 +130,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          DEPLOY_SHA="${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}"
+          DEPLOY_SHA="${{ inputs.ref || github.sha }}"
           SHORT="${DEPLOY_SHA:0:12}"
           TAG="analysis-${SHORT}"
           IMAGE="us-central1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/analysis:${TAG}"
@@ -247,10 +213,10 @@ jobs:
             --update-env-vars "\
               SERVICE_MODE=grpc,\
               DEPLOY_ENVIRONMENT=${ENVIRONMENT},\
-              FRONTEND_URL=${FRONTEND_URL},\
-              ANALYSIS_SERVICE_INTERNAL_SECRET=${{ secrets.CODESENTRY_INTERNAL_SECRET }}" \
+              FRONTEND_URL=${FRONTEND_URL}" \
             --set-secrets "\
-              GEMINI_API_KEY=codesentry-gemini-api-key${SECRET_SUFFIX}:latest" \
+              GEMINI_API_KEY=codesentry-gemini-api-key${SECRET_SUFFIX}:latest,\
+              ANALYSIS_SERVICE_INTERNAL_SECRET=codesentry-internal-secret${SECRET_SUFFIX}:latest" \
             --ingress all \
             --no-allow-unauthenticated
 

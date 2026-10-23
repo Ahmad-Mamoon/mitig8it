@@ -117,7 +117,8 @@ variable repointed without touching workflow code, at the cost of losing the lay
 old digests unreachable under the new path. Any image currently referenced by digest, including the
 pinned sandbox job image, keeps resolving only through the old repository.
 
-**GitHub Actions repository variables and secrets.** Seven variables and two secrets:
+**GitHub Actions repository variables and secrets.** The core CodeSentry-namespaced
+variables and deployment secrets are:
 
 | Name | Kind | Read at |
 | --- | --- | --- |
@@ -128,20 +129,15 @@ pinned sandbox job image, keeps resolving only through the old repository.
 | `CODESENTRY_ANALYSIS_URL` | variable | `deploy-api-cloudrun.yml:104` |
 | `CODESENTRY_ANALYSIS_URL_STAGING` | variable | `deploy-api-cloudrun.yml:110` |
 | `CODESENTRY_API_RUNTIME_SERVICE_ACCOUNT` | variable | `deploy-github-cloudrun.yml:185`, `deploy-analysis-cloudrun.yml:182` |
-| `CODESENTRY_INTERNAL_SECRET` | secret | api, github, analysis deploys |
-| `CODESENTRY_WEBHOOK_SECRET` | secret | `deploy-github-cloudrun.yml:174` |
+| `FIREBASE_TOKEN` | secret | frontend deployment |
+| `GCP_SA_KEY` | secret | optional fallback when Workload Identity Federation is unavailable |
 
 These are the one part of this bucket that is genuinely cheap to change, because the settings side is
 two clicks and the value is copied rather than migrated. They are also the most dangerous to change
-carelessly, because GitHub Actions resolves an undefined `vars.X` or `secrets.X` to the empty string
-rather than failing. What breaks if the workflow reference is renamed and the repository variable is
-not: the deploy succeeds. `FRONTEND_URL=''` means the API falls back to `http://localhost:5173`,
-which silently removes the production origin from the CORS allowlist. `GITHUB_SERVICE_INTERNAL_SECRET=''`
-means both ends compare empty strings, so the internal authentication check passes for anyone who
-sends no header. `CODESENTRY_API_RUNTIME_SERVICE_ACCOUNT=''` means the `run.invoker` binding is added
-for nobody. None of that shows up as a red deploy. If any of these is renamed, the rename and the
-settings change have to land together, and the workflow should be given a guard that refuses an empty
-value rather than continuing.
+carelessly, because GitHub Actions resolves an undefined `vars.X` or `secrets.X` to the empty string.
+The deployment workflows now reject required empty URLs and identities, while runtime credentials
+come from required Secret Manager references rather than repository secrets. If any variable is
+renamed, land the setting and workflow change together.
 
 ## Published surface
 
@@ -356,12 +352,8 @@ name in `--help`.
 
 The last two are in `.env.example`. Line 2 is the file's title header, and it contains an em-dash,
 which `CONTRIBUTING.md:155` forbids anywhere, so that line is already due for an edit on its own
-merits. Line 60 is `EMAIL_FROM_NAME=CodeSentry`, and it is not cosmetic in effect even though it is
-cosmetic in cost. `services/github-service/src/services/notificationService.js:81` and `:133` use
-that variable as the display name on outbound mail, defaulting to `Mitig8it` when it is unset. A
-self-hoster who copies `.env.example`, which is what the file is for, sends notification email signed
-CodeSentry, and the example file is the only reason they would. This is a one-word fix and it should
-be made.
+merits. Line 60 was `EMAIL_FROM_NAME=CodeSentry`; it and the other `EMAIL_*` variables were removed
+with the unused github-service notification service, so nothing reads them any more.
 
 ## Staged plan
 
@@ -468,11 +460,8 @@ approximate lists with one link to this page turns a smell into a documented dec
 actual deliverable. `EMAIL_FROM_NAME` and the `e2e-happy-path.sh` mismatch are real defects with
 one-line fixes and should go out with it.
 
-The empty-value guard from Stage 1 is worth landing before launch on its own merits, whether or not
-the nine variables are ever renamed. An undefined `secrets.CODESENTRY_INTERNAL_SECRET` deploys green
-and leaves internal service authentication comparing empty strings. That is a security property
-depending on a repository setting nobody is watching, and launch is when the number of people looking
-at this deployment goes up.
+The empty-value guards and Secret Manager authority from Stage 1 have now landed. They still need
+operator provisioning and a live ordered-deployment smoke before they count as production evidence.
 
 **Not before launch, and probably not after: everything else.**
 

@@ -234,6 +234,16 @@ class Verifier:
         )
 
     async def verify(self, request: RepairRequest, snapshot: Snapshot, bundle: PatchBundle) -> VerificationResult:
+        # An in-process broker knows its execution level before any repository code runs.
+        # Refusing only the returned evidence would protect publication after unsafe host
+        # execution had already happened. The response checks below remain for remote brokers.
+        configured_level = getattr(getattr(self, "broker", None), "verification_level", None)
+        if configured_level == DEVELOPMENT_VERIFICATION_LEVEL and not request.policy.allow_development_verification:
+            return VerificationResult(
+                "unsupported", {"reason_code": "development_verification_not_permitted", "verification_level": configured_level},
+                None, "development_verification_not_permitted", configured_level,
+                ["policy refused the development-only sandbox before execution"],
+            )
         if request.policy.sandbox_image_digest is None and not request.policy.allow_development_verification:
             return self._unsupported("sandbox_image_digest_missing")
         if request.policy.require_generated_regression_test and not bundle.generated_tests:

@@ -1,0 +1,810 @@
+{
+  "remediation_release_verified": false,
+  "rules": {
+    "auth.bypass.missing_check": {
+      "rule_digest": "3e8c2c77486a1d18b1cdfb1df88632ad09a5f996ea9dd581835f8989770bb347",
+      "status": "legacy_unvalidated"
+    },
+    "auth.weak_password_hash": {
+      "rule_digest": "1a7da64b18477187e5ca23445cf02ea9016239fa9669a4f1238a8cb5249c7c3f",
+      "status": "legacy_unvalidated"
+    },
+    "cmd.injection.shell_true": {
+      "rule_digest": "4abc45b16e2ca75a93178cd97cc1c9455437c9cf8b0a9609136ed5aeb5cc8db1",
+      "status": "legacy_unvalidated"
+    },
+    "code.injection.eval": {
+      "rule_digest": "38927631e954932381d957adc09176a4fc323ee9f60235f30eb65c318ea6d766",
+      "status": "legacy_unvalidated"
+    },
+    "config.debug_enabled": {
+      "rule_digest": "76f1aeea2939309936e06ac07a0e38b2bab391ad7b88b82d47f08f283116e009",
+      "status": "legacy_unvalidated"
+    },
+    "config.tls_disabled": {
+      "rule_digest": "959d3135927c83f64440d25c6040875f92f0cd68d542e729ebb81fd157ce4481",
+      "status": "legacy_unvalidated"
+    },
+    "config.verbose_errors": {
+      "rule_digest": "e2d8aa125dbcb01dfa7c6742bc94c8f31eda38476f0bc60884a8c64465363b1a",
+      "status": "legacy_unvalidated"
+    },
+    "cors.overly_permissive": {
+      "rule_digest": "adbca3e19542356e531e6575fef5d60c54cb0ab596f7f8ca2cadd64e072d8821",
+      "status": "legacy_unvalidated"
+    },
+    "crypto.hardcoded_iv": {
+      "rule_digest": "e5cb8e04edeb9181f9b82764630855ec45c47cd620da8d6a12df38772f9c3fc0",
+      "status": "legacy_unvalidated"
+    },
+    "crypto.insufficient_entropy": {
+      "rule_digest": "3704e5b08bfb669b41b4f32711434777efabe41ec4ff379a96f40cbd8794ce5e",
+      "status": "legacy_unvalidated"
+    },
+    "crypto.weak.hash": {
+      "rule_digest": "58b855c873f9d801265401baf1dfa3cdfe544ab49e95b5dff67187c0349af079",
+      "status": "legacy_unvalidated"
+    },
+    "csrf.missing_protection": {
+      "rule_digest": "7d200721f5c7ca7f4d22ae84b31c6ffa90bd95472d50478437e0440aeb5c2c15",
+      "status": "legacy_unvalidated"
+    },
+    "dependency.risk.version": {
+      "rule_digest": "5895e67acb493ef3320dcfaee422dbd9d95f1f4ef323b2ec72a82559911a4fc3",
+      "status": "legacy_unvalidated"
+    },
+    "deserialize.untrusted_data": {
+      "rule_digest": "461087a02c0ade64a0a3d406109f08e075500e31f5f6d8f6e7291f35613162c6",
+      "status": "legacy_unvalidated"
+    },
+    "ldap.injection": {
+      "rule_digest": "eea8670f6dfede8dac722de7c701c63f796ef6d6e11c9b77d36e92f5823774ab",
+      "status": "legacy_unvalidated"
+    },
+    "llm.prompt.injection": {
+      "rule_digest": "648f40ea6391d4835cc9c0f03d0e717470bd45f3c4d3ece87e4c02a94894d107",
+      "status": "legacy_unvalidated"
+    },
+    "logging.sensitive_data": {
+      "rule_digest": "0a44cea102e781d853d68e1ca4e2dc9f629fd5002dcc218fba57c454a164b486",
+      "status": "legacy_unvalidated"
+    },
+    "memory.buffer_overflow": {
+      "rule_digest": "2683d198ee9abb5e526f7cf3e5176c57d9021e9eb0540427f8328725da8b63f4",
+      "status": "legacy_unvalidated"
+    },
+    "memory.format_string": {
+      "rule_digest": "e2a92fc48a468d8456dbf9599a95bb8135d9f7030cc8dcda6d79f44cbfe72484",
+      "status": "legacy_unvalidated"
+    },
+    "nosql.injection": {
+      "rule_digest": "07e02f9cf04ac2784e9c1a6501431ebc266d0a7ab62e4836a04c6d9825d9e0f9",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-1321.js-dynamic-key-write": {
+      "rule_digest": "908fdd449462c622ae8ba0c1058dc1a662857a7fece8e8145b1fb5d6429de959",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-1321.js-merge-request-body": {
+      "rule_digest": "2e5059a4579ca51bf81310208e08f07683fdcb35883f8ed5d6935738df05e0c4",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-1321.js-setprototypeof-dynamic": {
+      "rule_digest": "545349467a0175fd4c58af72e29f68bf3fec0586b3554447d733356a1566978a",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-1336.py-jinja-template-interpolated": {
+      "rule_digest": "bf6ea3531ccf5a73ed64c8a41f877e86701ad686a4c42a0a082daa020cba7a12",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-1357.gha-third-party-action-unpinned": {
+      "rule_digest": "cb3e0ed10d39851cfadc6eb64077cd9fa540a7f7e144e97ebcbf684369112e42",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-200.gha-secret-in-untrusted-checkout-job": {
+      "rule_digest": "bd1f7a13dfe9f4bed17c9fc45d36ddb494ef317f9162799004e5806aae21b3e2",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-22.go-path-traversal": {
+      "rule_digest": "71de683c877def42f5505723d5551c5b212ea1c2f2d69e202755a8e4885cdf66",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-22.js-archive-entry-write": {
+      "rule_digest": "bba77d8d9771c7458cf85ec3772c2122a118efe156e2333857dd11278a1d9afe",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-22.js-fs-read-request-path": {
+      "rule_digest": "2ff73cfd9a019f9068141a323d69606058ebc33c225720fb36c7b5428e126d04",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-22.js-sendfile-request-path": {
+      "rule_digest": "36b09f02451f25f0ac0c8d57658a9b5a40af57538bd878ed6a00dffeadbbf7ff",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-22.path-traversal-fs": {
+      "rule_digest": "9355f3b67c12c6b1be0777345930e9038b302648d24fed478fe20e911d1784ac",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-22.path-traversal-open": {
+      "rule_digest": "7d91d70141524c0673724473fcaa4c4f6d9ba292ca1c5a51830cf57ee8f0c26a",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-22.php-path-traversal": {
+      "rule_digest": "674ab5bb80db82a69ab69f27bfcef7ae4e8e2ef17a872263a33ccd3fc812e005",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-22.py-archive-extractall": {
+      "rule_digest": "a2d5a1aabcdc9b2476bd0e859f2da5ce2fd13205a31d6f2acc6f2c918c631c3c",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-22.py-open-request-path": {
+      "rule_digest": "aad0301d47b418d923ff1f89e761d121daa83d0842c61cf881c6b683fbb9f34f",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-22.py-pathlib-join-interpolated": {
+      "rule_digest": "6053662a98ff7d178bd26e8780a3ce964154b06c49eb7b18865f0d82bd918e9a",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-22.py-send-file-request-path": {
+      "rule_digest": "bf7a34b8706f3ee6352999680b75710c480631ff086721358a47cdd9353fb262",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-22.ruby-path-traversal": {
+      "rule_digest": "671e715471978d0ed8d5c48e29b020c75b541adb3fd0100303caae523a78acaa",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-295.csharp-tls-disabled": {
+      "rule_digest": "611ed2ee53c9b5295bef44a99c8d2b511fca1ed9516999be76f48adb0141cfd9",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-295.go-tls-insecure": {
+      "rule_digest": "8343852b9f7a4ee6d797093678370a09fff291c464c1a527f43c323e96ab6704",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-295.js-agent-reject-unauthorized-false": {
+      "rule_digest": "40b0602051e32ea5d4e96dc7e8ea9330a6e0dfaf0eaa8db1d609a7e2daa64d30",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-295.js-checkserveridentity-disabled": {
+      "rule_digest": "c36b14965e40f3813fe5f85a79d9e335c01c928dd8f69c321f0b80eae1ca9f3b",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-295.py-requests-verify-false": {
+      "rule_digest": "2f4adb327b3ed939f4621a27e52160eccab5ddc39bf4ca71b5c3e9efc2cb6dc8",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-295.py-ssl-unverified-context": {
+      "rule_digest": "0ca16024fb86dac181dc4a6907d1ce5484fe44be52db9d52da5a2a86bb552724",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-295.tls-disabled": {
+      "rule_digest": "e5e267305ba3252dcb8d977c020cfbabdb86e32318421997fb9848b839d02473",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-295.tls-trust-all": {
+      "rule_digest": "db53f256ede975c86af896089d3aa3c9ca10476411b8079b7a5ee9c772d8d554",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-326.js-tls-min-version-legacy": {
+      "rule_digest": "88099c213792bcd828bf2f4fba67a4ffd23cb1b1dda8258d768521d6fdce7f5d",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-326.py-tls-version-legacy": {
+      "rule_digest": "4c1c648f8d2e459a70075e3af6e1ff25877d3669aa1769e232568d02af80ec26",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-327.csharp-weak-crypto": {
+      "rule_digest": "7447590e2179dcb17a4f65c4bff5dc0574e85a4d3fe57e340c57548ff2595336",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-327.go-weak-crypto": {
+      "rule_digest": "b7e605708b05cee3fbdc51761c0a78259759af26a5c9be37fbde44d8b0a5f888",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-327.js-ecb-cipher-mode": {
+      "rule_digest": "3d47efffde4beadb8b824e770418269fced8c3db9a9db1d6f9c402e5ff44f31a",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-327.py-ecb-cipher-mode": {
+      "rule_digest": "46c2d5b29e3ceec43da610290250f94fed915960df890a0e215d7f0b3503b294",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-327.weak-crypto-java": {
+      "rule_digest": "0c1782ba742b0bfd119de577c034998e516da55b41fb1e435e42885e0c9b710d",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-327.weak-hash-password": {
+      "rule_digest": "741d259854b37be4089e2447d2e4c0fea69c924bbe9c94799611870d00a6a468",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-329.js-static-initialization-vector": {
+      "rule_digest": "d2a03c8f9781effaeec32fd8edbbcfb3c0e0b8d9e799dee3e5d4946c69c4a073",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-329.py-static-initialization-vector": {
+      "rule_digest": "f69fd1ef3184f1a9a154fe3c57723dd58c0c0572bb5a1bd58d8fed3060cc81d8",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-338.js-math-random-secret": {
+      "rule_digest": "f119c0d0a100d5e10299bdee8e2dbbe28d4ced3b1b705cf5d97f482396ae18e6",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-338.py-random-module-secret": {
+      "rule_digest": "7385ed63dfd2dd3500f363a2433de6071bf3e5b17ba9b4b0c2ec803be9f276dd",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-347.js-jwt-decode-without-verify": {
+      "rule_digest": "f9b0f77088612c422a4e7a9071c03ed5e03dfdc7f7860c3080928f8b6c3a09ec",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-347.js-jwt-none-algorithm": {
+      "rule_digest": "fe0f1396a73986532323ff0974bede406c9d9d0f1e7ddfcf497e909466fee556",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-347.py-jwt-none-algorithm": {
+      "rule_digest": "02533b081992f4025451db2ea464bd0e5a43262841caedb920b9e21eec765c17",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-347.py-jwt-verification-disabled": {
+      "rule_digest": "38167ea6de6c44a17e8e99af294cc094733aef176bf5279d36c051bacde84b65",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-352.py-csrf-exempt": {
+      "rule_digest": "afa2e8ea95171f95b00b4a9b7812aa26919c87f50272a6d00b757fca1e42da17",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-489.flask-debug": {
+      "rule_digest": "c103d9364a536c0ffd32c1d0ee57176c25c2c204826b9d63ec671d3878fad8f1",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-489.js-express-error-stack-exposed": {
+      "rule_digest": "bc748050c2ad0fc41aef70a048696293672e7db9acdc54113b2edb63c09fa7b5",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-489.py-app-debug-true": {
+      "rule_digest": "6afcaa3205fe143ae267684979d8608ada8a5a0bf3edf33eccf910f06db2b8ee",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-489.py-flask-run-host-all-interfaces": {
+      "rule_digest": "e6204fdf3f7b6e744b3ea0ea96ce8fdf104ad077327ca81dc1210aa1b351ccfe",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-502.csharp-deserialization": {
+      "rule_digest": "42ef99b5ac6528e040af0edd8b3a344711113569d4805c059bd6ab3b7de740e7",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-502.java-deserialization": {
+      "rule_digest": "8fba36176da3c6e7c1d6a2009156250e6477fa8f5a51be75c9a288a7fe6e6ccc",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-502.js-node-serialize-unserialize": {
+      "rule_digest": "9cefc13c36a7c0356534a3f46169c1f7bb10ea7553a4a1ea3e44dd15be3b1e45",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-502.js-yaml-load-unsafe": {
+      "rule_digest": "f631fee4530f7b70b59f6042bac9828e13c09a639599952973a260e46e3880ab",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-502.php-unserialize": {
+      "rule_digest": "54c018fb80e3f596ee84d79aa2a71486a999e21ec5e890fa2e35f4cac8118795",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-502.pickle-loads": {
+      "rule_digest": "3d765c58bf0d606bee256bb39d01e0c60a66e4f337eb10a44eae89bea9f095fa",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-502.py-dill-shelve-load": {
+      "rule_digest": "d0b69be8c6189da799f6c928e7e626a3532a3e31fc7e90a3405197dddcdc3b0a",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-502.py-marshal-loads": {
+      "rule_digest": "e6e93791d0f3e6ca38716e81a5e0b1267d624544af5b9e3d28204e7dd5fb25e4",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-502.py-pickle-load-file": {
+      "rule_digest": "4b8fda44a27ae533000fe39205a2acf35749e5d5d22512531af52b491cd8ab06",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-502.ruby-marshal-load": {
+      "rule_digest": "fd6b90974798864b2c7933103a32fcfef0757681816c5853386cc0c1bfeb6334",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-502.yaml-unsafe-load": {
+      "rule_digest": "fa6f3aa6eaa92e705bfcb0aba3cb97c9b1573f1841957b9656b90f155213a488",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-522.gha-persist-credentials-on-untrusted-checkout": {
+      "rule_digest": "147918c60fe7883272ce10e343d7cd4bbc766f62eeb84c2a3a1458c293e1ea05",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-601.js-dom-location-assign": {
+      "rule_digest": "b110824265cc26205350bfb2c12cd824036181685cc823c4c183175d1a6edf0a",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-601.js-redirect-request-value": {
+      "rule_digest": "44e141e9c92376eaa83af3a16336d8ba5b35761f2966650e237e98ae21390c6c",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-601.open-redirect": {
+      "rule_digest": "58571fff771faa767b15a4d379c82bd97457ccf2085ad373a3fe5d7bb8827496",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-601.py-redirect-request-value": {
+      "rule_digest": "099bd7cc5e6a3d4be03fcfcafa36adf89da74c064e5351c461cb709da2d8e662",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-601.ruby-open-redirect": {
+      "rule_digest": "b7f26cf5def3a69c529708d90b5864e53fd6903fc7e27509b7260912ad27eaa7",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-611.php-xxe": {
+      "rule_digest": "815fb72739a0527e8eb3c4afc032d5b4dc19d3d0149e99ad714dc86dc86efec1",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-611.py-lxml-resolve-entities": {
+      "rule_digest": "daaeff48ce7b4b22b0f35ea83e59272dd2371c7adb964020e86e5453f4b13067",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-611.xxe-document-builder": {
+      "rule_digest": "b872a1edae557a6af0b173afa18fece6c2c1a0c21c760127efc613b23e66f82a",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-611.xxe-etree": {
+      "rule_digest": "facefaa8aaaa8e5160ed47c8eb40f6db7c64e5df1924966d2b882094d13feaf5",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-613.js-jwt-ignore-expiration": {
+      "rule_digest": "ec4bfd559f39b27526a4cc93f6eb1f893415ceaeeeb51c0d839ac61f1414ae6b",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-614.insecure-cookie": {
+      "rule_digest": "84f34e0d0d2a28472d5cb2c9855579f54f356ebe6d4751deafd44abdb771ac4e",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-614.js-session-cookie-insecure": {
+      "rule_digest": "43b2c5aa91873bde954396a14c1dbe70611da8f2e3f8e67a55480a1d77caa801",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-614.py-session-cookie-insecure": {
+      "rule_digest": "e78c3456f9d0d317f2aec499b0a49bbb98baaefeb84c5840777359206fd4f3e7",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-693.js-helmet-protection-disabled": {
+      "rule_digest": "43a18b2b50182c743c33bb27204f8072b075f0d610fc8303d3841aa579eb71c6",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-732.gha-permissions-write-all": {
+      "rule_digest": "fe79b86f089893be9b85d202ed2a34cd4619b4f247bbf9fdb62120770aee01e3",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-78.child-process-exec": {
+      "rule_digest": "2af8db9e88b7d66974051fbef797234111073c10069f479aee9c96d457863226",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-78.command-injection-input": {
+      "rule_digest": "7a85c08300179c37691660489c2b1b76fb7da30488e89800dda1260e39fac5b5",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-78.csharp-process-start": {
+      "rule_digest": "5e103f8171eaf4b2ee483930c3ead38119ae07cf769c99d6ae2200c4b7a0edbf",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-78.gha-run-untrusted-interpolation": {
+      "rule_digest": "fd316644f7971dfc92d915abb07cbe73f803e6ddef43a485095d9b3ba55960f9",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-78.go-exec-command": {
+      "rule_digest": "62197f4f04a07c88a56bdd09ba040a18550936c4381f633b7933a8c9d8f0737c",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-78.js-exec-interpolated": {
+      "rule_digest": "2f18ad42fd7f7515aea2afbbeebedcb91743e7b196181450fe3fa34269777a0d",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-78.js-shelljs-interpolated": {
+      "rule_digest": "136f4b6e81d9d252d51109f144ebe91b977ada4d693800f3d9ab2a58783b26ec",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-78.js-spawn-shell-true": {
+      "rule_digest": "cd555040f21efb870838e716758e92f0c2a7de5c65b2deb5c3ae7cfb69e05c94",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-78.php-command-injection": {
+      "rule_digest": "a390dd47121c6e069cdb450a1904e8cc544a33b76f8582208cca4e0eb61e8d90",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-78.py-os-popen-interpolated": {
+      "rule_digest": "1c41ac93afa1dac922b64edd27c1d9f388b169d083b61381a49a75b5e31d5992",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-78.py-os-system-interpolated": {
+      "rule_digest": "8f21b27cd23147c7e021eef89d914874751d2b42730399c4dff2992e9170ac57",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-78.py-subprocess-shell-interpolated": {
+      "rule_digest": "8a6da9c8a4950b70081a3871aa15aca07e14f007eabce035b3b58469b25a49a4",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-78.ruby-system-exec": {
+      "rule_digest": "2699ce2aee700de6118b6d1ce817fda181374de378b4738e2825dbb765aaed27",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-78.runtime-exec": {
+      "rule_digest": "943e591abe2cc1bd34f7b9c224339766e2258bc90c3596df6776683e5d11c382",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-79.csharp-xss-raw": {
+      "rule_digest": "c2f1a08a66db577017997445dc74008e15f4b6afae886b18de1021187fa829a8",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-79.flask-render-template-string": {
+      "rule_digest": "b351ed1302334b4f99ef460a9fde6246e78bccdcada863cb6ad2daad782ae65c",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-79.go-template-html": {
+      "rule_digest": "3591d0da5c097ee3c7f1d1052dc33658765d61604c9f5c8b83ee37a3b9982f28",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-79.js-angular-bypass-security-trust": {
+      "rule_digest": "ee52631061a2d1291db19d0090d31beb1151ba8815c2398984170f8df3dd7b0b",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-79.js-dom-html-property-sink": {
+      "rule_digest": "022a656ca93b40638d53ca2d1786ee7019cb09f631b07d76f8f2237e5f6c9e62",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-79.js-jquery-html-sink": {
+      "rule_digest": "d2530e7af53edac59b61f5d78c4cf4adeaae2c598c9c35b061a8e8cf9bda46a8",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-79.js-response-html-interpolated": {
+      "rule_digest": "6c5aa80d3e5301f116f0ea6480ed9e6060213f433cb553f21a3b5bf8d5e7c9cf",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-79.js-template-autoescape-disabled": {
+      "rule_digest": "ee1099e0855e30074fd44a61153c0fb328c25ad5b2625fe961f5116d33525179",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-79.php-xss-echo": {
+      "rule_digest": "188200f648af051cafb1dea910ce8d837f4cdcf82eaff53a2bce74171f4b8b1c",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-79.py-django-mark-safe-dynamic": {
+      "rule_digest": "24792b80ecec858c612aa3ea4572889e53d49d60b622f024cf20dabd8ab994f7",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-79.py-html-percent-format": {
+      "rule_digest": "8c1cf9332d3170f1b435d0e8c5a5039eccaae2b294308246e8c22718b85d56b4",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-79.py-html-response-interpolated": {
+      "rule_digest": "bb0feb25c0cc6b5393b0fbacbdaeb1a40c5080bb226b1bdef4315e2af9ecddf8",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-79.react-dangerously": {
+      "rule_digest": "26b8566d44eb3b15125e658cba10ace9f7ea159508ffb2b02dbb866953098623",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-79.ruby-xss-raw": {
+      "rule_digest": "f1834c2a41de35861b9c9c30c72446b12ab7047ad968ad20e3a244c7e6cd184c",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-79.tpl-dust-unescaped-filter": {
+      "rule_digest": "106d6d175b547a3422bb0c29bda93062742b59eba3b6c8157daa453b83986634",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-79.tpl-ejs-unescaped-output": {
+      "rule_digest": "c1236ed2a5e37368d72877e4c1db056bbba071612e06b9e6de7ef533582f0011",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-79.tpl-erb-unescaped-output": {
+      "rule_digest": "03eb066302b5aa13db83a570f44262dc2c2461b20b1de43e5bb8ca23fd6eec5d",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-79.tpl-inline-script-inner-html": {
+      "rule_digest": "b9c5f5aeec00923643586ef750f0594e5cce8557f293b807c189aaa71fd35e56",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-79.tpl-mustache-triple-brace": {
+      "rule_digest": "627f02ada3406d11cd5ac81fdc072b7d9befa1faa2308d688521b8db61ca9368",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-79.tpl-pug-unescaped-interpolation": {
+      "rule_digest": "159a53bfe348262b51e03171425dabc9a90bccb0fcc5d2d7c2cc8f6f58f4f4a3",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-79.tpl-svelte-html-tag": {
+      "rule_digest": "60fffe3beac00afa8cb2f06a512469a7e2e807810663d6c16fb2fbc016d67d54",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-79.tpl-vue-v-html": {
+      "rule_digest": "0a1879581f4faf0855fb3875ea9551c1d23fe165202bc388ccfcf61cdc65755a",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-79.xss-innerhtml": {
+      "rule_digest": "6efffab3430f77f45d1363fe92e3cc91ffc3f642ea59c8e690079611975a7e70",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-79.xss-servlet-response": {
+      "rule_digest": "53693e1d250e7bc598e4cd84dfde77c0a94cb729bda3d31c172635d8145078b3",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-798.csharp-hardcoded-secret": {
+      "rule_digest": "377a96b5bcd58b81f563e343da78676487bff275b0f937dcd552b704d64e7c34",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-798.go-hardcoded-secret": {
+      "rule_digest": "6ed706b461f3d3ab01b746d34db40b1d0243267d8875872402a711e74a80077d",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-798.hardcoded-secret-assignment": {
+      "rule_digest": "680d1780733ee578a6a6a61f38f889c4984d379c4cec308e083a9a6adbbc538f",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-798.hardcoded-secret-java": {
+      "rule_digest": "1af3c58484aa9944fa809e4cee1035b199702b19365b536fa3fe1b73ad2107db",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-798.hardcoded-secret-js": {
+      "rule_digest": "1572f28268dd9749572d28c765047b9a9a69a2ad86e58b2e34b339985a62f7ad",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-798.js-basic-auth-literal": {
+      "rule_digest": "24d792dbf7462e6ebb04bb12fb385b01c4f98d91aa5624a89537f5899ea4088d",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-798.js-credential-config-key": {
+      "rule_digest": "a4ced2fb6c3f929e71af373dbf338baf4201822a88290953dd28e3c7de0b0a96",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-798.js-credential-constant": {
+      "rule_digest": "a4de1aa1ea5a40000540aa903189d1bf32430a20f1e42dc2a2fa28d081381e0f",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-798.js-session-secret-literal": {
+      "rule_digest": "70426d9a4aac785771e73cc2e726fbc84a7da3d5bd272909ece3067fb0db2849",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-798.php-hardcoded-secret": {
+      "rule_digest": "227690c92030afe426f9d0b428cec22fdd02689307033d6013bbf7ff34eb5a29",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-798.py-connection-string-literal": {
+      "rule_digest": "cf768c5c456f9aa9d31834dc2bda7d1eaee2bde901939e21bf76ca6f9c4849ce",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-798.py-credential-keyword-argument": {
+      "rule_digest": "a0b3c045d019519a7866f44b7756eaaf42407b0d704526f3d06c3cd973945b1f",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-798.py-framework-secret-key-literal": {
+      "rule_digest": "10716eb30f7b385bc342deadca3b554bd40a73aa3132a86c14e066bd62bc1e28",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-798.ruby-hardcoded-secret": {
+      "rule_digest": "4a3e10c74f0d0cc3cbf3cdcea226ed508cc00fc1e60e1d7a15d95b4ddc1256eb",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-829.gha-build-step-under-privileged-trigger": {
+      "rule_digest": "db4afcedd33c03d7501fcaebb14763f8f02e23b8a24df908596d97df1213b31a",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-829.gha-untrusted-checkout-privileged-trigger": {
+      "rule_digest": "e7a3171c82a01cfe6fd3be2cb39a39d7e6f8d9be5dbe28c7490bddafc456f846",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-89.csharp-sql-injection": {
+      "rule_digest": "d0d1125795645dd5698c7c1eb50cd0d2c37c07ff29c42c0d251f1b9b65e29e2b",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-89.go-sql-sprintf": {
+      "rule_digest": "732a027a2376a8d217ae981414afa9dd1ae65fdbdd5501fd74101edae39f0fdf",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-89.js-knex-raw-interpolated": {
+      "rule_digest": "967abef7d80f7da32d981753fe7fe0d271098470efe840844d61c1044bdc4492",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-89.js-query-string-concat": {
+      "rule_digest": "4da2ca0d315d968597d8a3a94133839b8736a472ec1cbd81621ced4c08017b75",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-89.js-sequelize-literal-interpolated": {
+      "rule_digest": "6a39662f9b5982d4dc2697935bc88c207e5117964918b137c2cd973b9ec0b271",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-89.js-typeorm-where-concat": {
+      "rule_digest": "9f629d62f1e16b9e7998a0c1a2ca3f75b27c3f2698c48fd7bf04ebba8d72b4e8",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-89.php-sql-injection": {
+      "rule_digest": "91bacbd820d59059bf6702d45626849350de83f82cf6328f1aff8fed1f227793",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-89.py-django-raw-interpolated": {
+      "rule_digest": "5e88363d382f440a3f8ffe81d7d686c87150cd560e87f75068974f662b32be73",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-89.py-execute-concat-direct": {
+      "rule_digest": "2569f4cb3997cf2325f0903382f29b99fb86531d76103cf714a5098c509eaeb0",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-89.py-execute-fstring-direct": {
+      "rule_digest": "81b14968846c1a5b7f30611d015cf6772b5cf82b70521951845ac799aece6d3d",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-89.py-sqlalchemy-text-interpolated": {
+      "rule_digest": "a89d9b492cc33e0ce4ac0223b5ad785d98eb5f0da9f9479bfab1fd7a8025644b",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-89.ruby-sql-interpolation": {
+      "rule_digest": "95d2e7cdc10172df9e85239c27ef346ff04745f7b72119b1d6722040a6b3ddfa",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-89.sql-injection-concat": {
+      "rule_digest": "bfa562824a46026bf8f204d84164b2d2b91073b268d9d1a1ef2d9b6a40f0ac38",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-89.sql-injection-format": {
+      "rule_digest": "809aac6cd98373011f841c90f0e60604eb2e361df354c14ea86551feecc884a7",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-89.sql-injection-fstring": {
+      "rule_digest": "1ea5f73453731a3704362d9a382b51635275499bc2516ec1c532e81142b2c3b4",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-89.sql-template-literal": {
+      "rule_digest": "cd2661d32b3326686d7608c34fd18ad8e4ab9204e15c6edde8b311f3b6190b56",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-916.js-password-weak-hash": {
+      "rule_digest": "19758d9dfbd8d2b6e87a70a0b3ee2ad52d1225689ca620d8fa76f629b3c62f62",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-916.py-password-weak-hash-usedforsecurity": {
+      "rule_digest": "47c4cc423b7b01912c28841fb1dbfeddf964ffd60635f265ef39c1c927a49da2",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-918.js-fetch-request-url": {
+      "rule_digest": "63c2d8b076761ec029ff9b168061f88cd5af44344f132e73f920caf42ce5846b",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-918.js-http-request-request-url": {
+      "rule_digest": "cadf3b0ebcdb17956f88d50302a118fd4701099e39943fff405154264c14e64e",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-918.py-requests-interpolated-url": {
+      "rule_digest": "e25c574c866b4d32c7744a7fcada31c0a73d69ba0a18ce30a3a047a04d2693bb",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-918.py-urlopen-request-url": {
+      "rule_digest": "7c27d67e66ee9207522c3df7a5be25ac6cef2dd242af771ffb4cb9437e72b394",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-918.ssrf-axios": {
+      "rule_digest": "4a81383756ef8ed31b4a27b4b2ddb85f61a12c5829c7b139fb9bcd3facee22e2",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-918.ssrf-requests": {
+      "rule_digest": "4b01491528cac70161d5b79fa3d2760fff0cec2fb43fbc630794baf06d6041f9",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-942.cors-wildcard": {
+      "rule_digest": "315b770ccbb411afd7d870b44c3216fa43b009c3b33ae34e9835031d01b4117a",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-942.js-cors-credentials-reflected": {
+      "rule_digest": "2856abec8ea452f7f8a34032962c214a0296f488d3d18109f1af6020e40a9b52",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-942.py-cors-credentials-wildcard": {
+      "rule_digest": "336a18d18ab28993ab407aacec8994ad8b3b6e3fc875bf9549beccd87ec57449",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-943.js-mongo-request-filter": {
+      "rule_digest": "ee0ea8dff49061ef67d926450be421e359041e6a6e692d4ab248580e901e6342",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-943.js-mongo-where-operator": {
+      "rule_digest": "d84f0d7bde456dd915de853b94a4c3aad19e782fa67ebe6350bba508c5f4380c",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-943.nosql-injection": {
+      "rule_digest": "73c34c6ec9e6836d03a0d0e05f42ddacd40f16b410367fed30e1eda9f8b31be1",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-943.py-pymongo-request-filter": {
+      "rule_digest": "208cbaf30470d5f68ba6c2d8c9522cc3e983fe5bedae1493d70478ffd30b7080",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-943.py-pymongo-where-operator": {
+      "rule_digest": "699c6cff10d8724b0a0b6448e2afa37b3e3ce2d6a8dd2b1f3ac92118be6e8e5b",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-95.eval-injection": {
+      "rule_digest": "86c829ed5f3fe252fa74590be228741c80a6c805e2ee0a20c2581491f3686823",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-95.js-eval-interpolated": {
+      "rule_digest": "a35e629e7adab20803b5c8bd26038ed97e2134473650e09c2292bf184a6bb741",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-95.js-new-function-dynamic": {
+      "rule_digest": "0aa4dc01612d25a4706bf64f05ec9475bf766ba73faf739f6b82c658a38c69c6",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-95.js-settimeout-string": {
+      "rule_digest": "38d9c814f58d6b2833d0bb82dcf2556ccf19e1852f97215aac02839917332a5c",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-95.js-vm-run-dynamic": {
+      "rule_digest": "d6685f347c5070ca8bf6c8618af7f3f1b92a4571099caa3e893ea4aacc9024c4",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-95.php-eval": {
+      "rule_digest": "adc78dae8be952efef38facfaf200151cf0c1b98015f6457763789fd6c94aec0",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-95.py-eval-interpolated": {
+      "rule_digest": "83a4b5c63efbb33c059607b18265eda4fb8218d61384a24b82e098e1768b5ab9",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-95.py-eval-request-value": {
+      "rule_digest": "2877c69cfb98b0cda92b85ce4623c3057bf7a4de135782bb251d6199a86713bb",
+      "status": "legacy_unvalidated"
+    },
+    "opengrep.cwe-95.ruby-eval": {
+      "rule_digest": "8577a7b4ababc1966c268cb54e8ab859c1a3aa14d8254071c7a8f3940f92e5e9",
+      "status": "legacy_unvalidated"
+    },
+    "race.toctou": {
+      "rule_digest": "8b627f9d3d0c2a468cd0d1f5a7c35fc436d7202a0915e14aae7a504aba7e74fb",
+      "status": "legacy_unvalidated"
+    },
+    "redirect.open": {
+      "rule_digest": "c440653b717ae8abb36d699c6a84845bc019bae7f062a2fa1e81cac7a6dfcd30",
+      "status": "legacy_unvalidated"
+    },
+    "secret.entropy.credential_assignment": {
+      "rule_digest": "14d344d062037cfeb6fbfd507ab7e22ff2896fa1ed4c3bd7efea423f515bd1c9",
+      "status": "legacy_unvalidated"
+    },
+    "secret.format.known_key": {
+      "rule_digest": "14d344d062037cfeb6fbfd507ab7e22ff2896fa1ed4c3bd7efea423f515bd1c9",
+      "status": "legacy_unvalidated"
+    },
+    "secret.hardcoded.credential": {
+      "rule_digest": "27dcecc347b0ea4e22d4547092c4f69e78603dd95fed4dc09b80f16419b0ae97",
+      "status": "legacy_unvalidated"
+    },
+    "session.insecure_cookie": {
+      "rule_digest": "7f39686e5dad38d8decfffb44f403cca0c38795365910e8898e76fcf31b429e2",
+      "status": "legacy_unvalidated"
+    },
+    "sql.injection.raw_query": {
+      "rule_digest": "8bc8ccbfadb2f1806b1a8de530fc748b9d9d557d4f2a7c13339236df16a43ebe",
+      "status": "legacy_unvalidated"
+    },
+    "ssrf.untrusted_url_fetch": {
+      "rule_digest": "61f875c54baf886d00ddf66002925bbfd0bc85a35c220c25af076e05c648018c",
+      "status": "legacy_unvalidated"
+    },
+    "template.injection": {
+      "rule_digest": "085daa80c5a5ae02d4cbbe6dc1b44cd9854b2be85b5f8f2c3ab9ffcda27fb59f",
+      "status": "legacy_unvalidated"
+    },
+    "upload.unsafefile": {
+      "rule_digest": "fe1e3db106e59fe806fc425fb70f36c6d3b2eeccc6a4d2eadb3cab6279d54b9d",
+      "status": "legacy_unvalidated"
+    },
+    "xss.unsafe_html_render": {
+      "rule_digest": "1803b1c0b9dad14075152447807aa82c499fe247aae9460fe8b33b71ec7121ed",
+      "status": "legacy_unvalidated"
+    },
+    "xxe.xml_parsing": {
+      "rule_digest": "12242bb4f221edc67d026de160d4780a739490b87e77fd27a315f2eb7d1bcde0",
+      "status": "legacy_unvalidated"
+    }
+  },
+  "schema_version": "v1"
+}

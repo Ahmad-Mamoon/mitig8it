@@ -6,6 +6,13 @@ Nothing here has been run. `.github/workflows/release.yml` exists, its gates and
 tests, and no `v*.*.*` tag has ever been pushed to this repository. The first release is the first
 time this procedure runs, which is why the dry run is the default and why step 2 below is a dry run.
 
+Production release is currently blocked by missing independent quality evidence.
+Run `make production-readiness` to inspect the machine-readable reasons (exit 2
+is expected today). The release workflow reruns this strict check before image
+publication; manual and reusable production deployments enforce it as well.
+Staging permits the documented legacy compatibility inventory, but cannot enable
+fix publication. See [the exact release criterion](../benchmarks/rule-quality/README.md).
+
 ## The versioning policy
 
 The versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html), applied to the
@@ -32,9 +39,10 @@ enough to be stated twice, because it is the surprising half.
 - **The rule sets.** Rules are added, widened, narrowed and removed between patch releases.
 - **Measured precision and recall.** These are measurements, not commitments. They are expected to
   move, and every published figure names the run that produced it.
-- **Which findings post.** A rule whose measured precision falls below 0.8 over at least three
-  adjudicated findings is quarantined: it still runs and is still counted, and nothing it produces
-  reaches a reviewer. A quarantine can be applied or lifted in a patch release.
+- **Which findings post.** Quarantined rules still run and are counted without reaching
+  reviewers. New, changed, and re-enabled rules require 100 reviewed holdout predictions
+  and a two-sided 95% Wilson lower precision bound of at least 0.95 before publication.
+  Existing frozen legacy exceptions preserve compatibility but do not establish production readiness.
 - **The wording of a comment, a review body or a check summary.** A patch release may rewrite any
   of it. A test that greps our review text will break, and that is not a breaking change.
 - **Which repairs are attempted, and the verification level a fix reports.**

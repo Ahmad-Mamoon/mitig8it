@@ -49,7 +49,7 @@ class TestTierPayloadsReportTestCode:
             pull_request_number=1,
             commit_sha="a" * 40,
             findings=[{
-                "rule_id": "hardcoded_secret",
+                "rule_id": "secret.hardcoded.credential",
                 "file_path": "test_security.py",
                 "severity": "critical",
                 "confidence": 0.9,

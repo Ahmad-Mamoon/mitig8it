@@ -161,3 +161,85 @@ A label is a measurement, so it has to be one someone read.
   `harvest_cve_labels.py` prints the candidates; it does not decide.
 * Refresh `recall-baseline.json` in the same change. The ratchet refuses to compare while the
   two files name different labels.
+
+## Strict standalone detection report
+
+The historical `score.py` report is exploratory: it flattens findings without
+retaining completed-zero-result versus failed/missing file coverage, and joins
+hand verdicts by fingerprint without binding the system/configuration revision.
+Do not use its fixture percentages as production accuracy or release admission.
+The labels are incomplete, so an unlabelled alert is not automatically false and
+an unobserved tree is not automatically a missed vulnerability.
+
+The stricter offline contract is separate and does not modify these labels:
+
+```sh
+.venv/analysis/bin/python -m benchmarks.detection_evaluation \
+  --labels benchmarks/vulnerable-corpus/labels.json \
+  --observations path/to/detection-observations.json \
+  --adjudications path/to/scoped-adjudications.json
+.venv/analysis/bin/python -m pytest benchmarks/test_detection_evaluation.py -q
+```
+
+No observations is a supported diagnostic: all labels remain unobserved. Legacy
+replay JSON or fingerprint-only adjudications are explicitly invalid for this
+contract; the report never backfills identity from the current checkout.
+
+Each observation document must use `schema_version: detection-observations-v1`
+and contain:
+
+- `corpus_sha256`: SHA-256 of the complete canonical label document (JSON with
+  sorted keys and compact separators), not just the labels that were detected.
+- `scope: published_detection`, the pinned `repo` and full 40-character `ref`.
+  Only one observation document per repository/tree is accepted; do not pool
+  repeated runs or different systems as independent samples.
+- `system`: full 40-character `source_revision`, 64-character `artifact_sha256`,
+  `configuration_sha256`, and `publication_policy_sha256`, plus boolean
+  `triage_enabled`. All documents in one report must identify the same system.
+  Configuration identity must cover scanner versions, enabled stages, flags,
+  model/prompt identity when enabled, and all effective detection settings.
+- `files`: explicit file observations with canonical relative `path`, full
+  `source_sha256`, `findings` (including an explicit empty array when none), and
+  `stages`. Stage keys are exactly `tier1`, `tier2`, and also `tier3` when enabled;
+  each status is `complete`, `partial`, `error`, or `not_attempted`.
+- Each finding has nonempty `fingerprint` and `rule_id`, matching `file_path`,
+  positive integer `line_start`/`line_end`, and canonical `internal_type`.
+  Duplicated file records/fingerprints, malformed findings, mixed identity,
+  missing stages, or a different corpus digest are reported as errors.
+
+A hand-review document uses `schema_version: detection-adjudications-v1`, the
+same `corpus_sha256`, and an `observations` array. Each review requires
+`observation_id`, `verdict` (`true`, `false`, or `uncertain`), `reviewer`, `source`,
+and `sampling_unit`. Use the ID emitted by the report: it hashes the entire
+finding, source-file digest, repository/ref, and system object. Changing any
+of those invalidates the review rather than silently reusing it. Duplicate,
+stale, or conflicting judgments are errors; conflicts remain uncertain.
+
+The report distinguishes:
+
+- Precision among label-confirmed or scoped-human-reviewed **accepted alerts**,
+  with its numerator/denominator and unresolved-alert count. Bounds over all
+  accepted alerts treat every unresolved judgment as false or true respectively.
+- Recall of **labeled vulnerabilities**: exact line overlap and expected class
+  are required, with one-to-one maximum matching. One broad finding cannot
+  satisfy two labels, and duplicate alerts do not automatically become extra
+  true positives. A miss requires all enabled stages to complete for that file.
+  Unscanned/failed coverage stays unknown; all-label bounds disclose its effect.
+- Labeled-file completion, missing trees/files, incomplete stages, invalid
+  observations, and language slices. This is not whole-repository coverage:
+  the label manifest does not enumerate every source file or vulnerability.
+- Two-sided 95% Wilson **IID reference** intervals, explicitly not production
+  confidence intervals: repository dependence, selection bias, and independent
+  holdout sampling have not been established. Accuracy, true negatives, and F1
+  are null, because the corpus is not exhaustively labeled and the two metrics
+  use different units. Invalid records are listed separately, not certified or
+  silently presented as valid denominator observations.
+
+`production_ready` and `release_admissible` are always false. The default CLI
+exits 2, including for perfect fixture results; `--report-only` explicitly permits
+diagnostic exit 0 without changing those fields. This check is intentionally
+not connected to production readiness or publication. To earn that integration,
+collect frozen, independently reviewed, representative holdout evidence with
+verified execution/system provenance, complete file/stage coverage, and an
+explicit sampling/cluster uncertainty plan. Digest strings assert identity but
+do not authenticate an execution. No such evidence is fabricated by this tool.

@@ -3,12 +3,10 @@ container supplies: the object downloader, the metadata and Admin API fetches, t
 subprocess, and the check subprocess.
 
 The two controls that need real kernel support are not asserted here; they are the parts the
-runbook says are measured at deploy time by the smoke test, and the entrypoint reports them
-rather than assuming them. So `isolate_network=False` is passed throughout and no test forks a
-namespace; `disable_dns_resolution` is replaced so no test writes the host's
-`/etc/resolv.conf`; and because dropping to another user needs privileges this process does not
-have, `execute_task` is given a recording check runner while `run_check` is exercised directly
-with no pre-exec step.
+runbook says are measured at deploy time by the smoke test. Task tests inject the namespace
+verdict and a separate check identity, and replace ownership changes so they never change the
+host's configuration. `execute_task` is given a recording check runner
+while `run_check` is exercised directly with no pre-exec step.
 """
 from __future__ import annotations
 
@@ -17,26 +15,17 @@ import hashlib
 import io
 import json
 import os
-import pwd
 import subprocess
 import sys
 import tarfile
+import types
 
 import pytest
 
 from src.sandbox import job_entrypoint as entry
 
-# Captured before the autouse fixture replaces the module attribute, so the real function can
-# still be exercised without any test writing the host's /etc/resolv.conf.
-REAL_DISABLE_DNS_RESOLUTION = entry.disable_dns_resolution
-
 CHECK = {"check_id": "exploit", "kind": "exploit", "argv": [sys.executable, "-c", "print('ok')"], "timeout_seconds": 30}
 NONCE = "n" * 64
-
-
-def current_user() -> str:
-    """The test process's own user: chowning a tree to yourself is allowed, chowning to root is not."""
-    return pwd.getpwuid(os.getuid()).pw_name
 
 
 def archive(files: dict[str, str]) -> bytes:
@@ -64,7 +53,7 @@ def config(body: bytes, *, check=None, digest=None, user=None) -> dict:
         "result_prefix": "snapshots/x/0",
         "check": check or CHECK,
         "nonce": NONCE,
-        "check_user": user or current_user(),
+        "check_user": user or "sandboxcheck",
         "project": "proj",
         "region": "us-central1",
         "job": "sandbox",
@@ -85,8 +74,16 @@ def digest_reader(digest="sha256:" + "a" * 64, error=None):
 
 
 @pytest.fixture(autouse=True)
-def never_touch_the_host_resolver(monkeypatch):
-    monkeypatch.setattr(entry, "disable_dns_resolution", lambda: "cleared")
+def use_an_isolated_fake_check_identity(monkeypatch):
+    separate_user = types.SimpleNamespace(pw_uid=os.geteuid() + 1, pw_gid=os.getegid() + 1)
+
+    def getpwnam(user):
+        if user != "sandboxcheck":
+            raise KeyError(user)
+        return separate_user
+
+    monkeypatch.setattr(entry.pwd, "getpwnam", getpwnam)
+    monkeypatch.setattr(entry, "_chown_tree", lambda *args: None)
 
 
 class RecordingCheckRunner:
@@ -110,7 +107,7 @@ def run_task(tmp_path, body: bytes, **kwargs) -> dict:
         settings,
         download=kwargs.pop("download", lambda bucket, name: body),
         workspace_root=str(tmp_path),
-        isolate_network=False,
+        isolate_network=kwargs.pop("isolate_network", True),
         image_digest_reader=kwargs.pop("image_digest_reader", digest_reader()),
         probe_runner=kwargs.pop("probe_runner", denied),
         check_runner=kwargs.pop("check_runner", RecordingCheckRunner()),
@@ -271,6 +268,15 @@ def test_a_missing_check_user_stops_the_task_instead_of_running_as_the_credentia
     assert all(probe["reached"] is None for probe in result["probes"].values())
 
 
+@pytest.mark.parametrize("uid", [0, os.geteuid()])
+def test_root_or_the_credentialed_identity_never_runs_repository_code(tmp_path, monkeypatch, uid):
+    monkeypatch.setattr(entry.pwd, "getpwnam", lambda user: types.SimpleNamespace(pw_uid=uid, pw_gid=uid))
+    runner = RecordingCheckRunner()
+    result = run_task(tmp_path, archive({"x.txt": "x"}), check_runner=runner)
+    assert result["reason_code"] == "check_user_unavailable:ValueError"
+    assert result["completed"] is False and runner.calls == []
+
+
 # -- probes --------------------------------------------------------------------------------
 
 
@@ -280,14 +286,53 @@ def test_probes_report_what_the_check_user_measured(tmp_path):
     assert all(probe["reached"] is False for probe in result["probes"].values())
 
 
-def test_a_reached_probe_is_reported_rather_than_hidden(tmp_path):
+@pytest.mark.parametrize("target", ["metadata", "internet", "dns"])
+def test_a_reached_probe_stops_repository_code_before_execution(tmp_path, target):
     def reached(argv):
         measured = {probe["target"]: {"reached": False, "detail": "x", "endpoint": ""} for probe in entry.PROBES}
-        measured["metadata"] = {"reached": True, "detail": "connected", "endpoint": "169.254.169.254:80"}
+        measured[target] = {"reached": True, "detail": "connected", "endpoint": "x"}
         return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(measured), stderr="")
 
-    result = run_task(tmp_path, archive({"src/db.ts": "x\n"}), probe_runner=reached)
-    assert result["probes"]["metadata"]["reached"] is True
+    runner = RecordingCheckRunner()
+    result = run_task(tmp_path, archive({"src/db.ts": "x\n"}), probe_runner=reached, check_runner=runner)
+    assert result["probes"][target]["reached"] is True
+    assert result["reason_code"] == "sandbox_network_not_denied"
+    assert result["completed"] is False and runner.calls == []
+
+
+@pytest.mark.parametrize("measurement", [None, {}, {"reached": None}, {"reached": 0}, "false"])
+def test_an_inconclusive_or_malformed_probe_never_runs_repository_code(tmp_path, measurement):
+    def measured(argv):
+        probes = json.loads(denied(argv).stdout)
+        probes["dns"] = measurement
+        return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(probes), stderr="")
+
+    runner = RecordingCheckRunner()
+    result = run_task(tmp_path, archive({"x.txt": "x"}), probe_runner=measured, check_runner=runner)
+    assert result["reason_code"] == "sandbox_network_not_denied"
+    assert result["completed"] is False and runner.calls == []
+
+
+def test_an_unavailable_namespace_never_runs_probes_or_repository_code(tmp_path):
+    runner = RecordingCheckRunner()
+
+    def probe(argv):
+        pytest.fail("no probe should run without the isolation control")
+
+    result = run_task(tmp_path, archive({"x.txt": "x"}), isolate_network=False,
+                      probe_runner=probe, check_runner=runner)
+    assert result["runner"]["network_namespace"] == "unavailable"
+    assert result["reason_code"] == "sandbox_network_namespace_unavailable"
+    assert result["completed"] is False and runner.calls == []
+    assert all(probe["reached"] is None for probe in result["probes"].values())
+
+
+def test_the_namespace_preflight_uses_the_same_demotion_as_the_check(tmp_path, monkeypatch):
+    tested = []
+    monkeypatch.setattr(entry, "network_isolation_available", lambda preexec: tested.append(preexec) or True)
+    runner = RecordingCheckRunner()
+    run_task(tmp_path, archive({"x.txt": "x"}), isolate_network=None, check_runner=runner)
+    assert len(tested) == 1 and tested[0] is runner.calls[0][3]
 
 
 def test_a_probe_that_could_not_run_is_null_and_never_false():
@@ -303,6 +348,13 @@ def test_unreadable_probe_output_is_null_for_every_target():
     measured = entry.run_probes(lambda argv: subprocess.CompletedProcess(argv, 0, stdout="not json", stderr=""))
     assert set(measured) == {"metadata", "internet", "dns"}
     assert all(probe["reached"] is None for probe in measured.values())
+
+
+def test_a_failed_probe_process_cannot_report_denial_with_partial_output():
+    def failed(argv):
+        return subprocess.CompletedProcess(argv, 1, stdout=denied(argv).stdout, stderr="failed")
+
+    assert all(probe["reached"] is None for probe in entry.run_probes(failed).values())
 
 
 def test_a_target_the_probe_left_out_is_null_rather_than_absent():
@@ -332,6 +384,19 @@ def test_the_task_hands_the_check_its_argv_timeout_and_a_demotion_step(tmp_path)
     assert result["completed"] is True and result["probes"]["dns"]["reached"] is False
 
 
+def test_task_network_denial_does_not_break_the_trusted_result_transport_resolver(tmp_path, monkeypatch):
+    real_path = entry.Path
+
+    def path_without_global_resolver_access(path):
+        assert str(path) != "/etc/resolv.conf", "the trusted task still needs DNS to upload its signed result"
+        return real_path(path)
+
+    monkeypatch.setattr(entry, "Path", path_without_global_resolver_access)
+    result = run_task(tmp_path, archive({"x.txt": "x"}))
+    assert result["completed"] is True
+    assert result["runner"]["dns_resolution"] == "isolated_by_network_namespace"
+
+
 def test_the_check_runs_in_the_extracted_tree_and_its_exit_code_is_data(tmp_path):
     result = run_the_real_check(
         tmp_path,
@@ -357,6 +422,16 @@ def test_a_check_that_cannot_be_executed_says_so(tmp_path):
     result = run_the_real_check(tmp_path, {"x.txt": "x"}, ["/nonexistent/binary"])
     assert result["reason_code"].startswith("check_not_executable:")
     assert result["completed"] is False
+
+
+def test_a_namespace_failure_during_preexec_is_incomplete_evidence(tmp_path, monkeypatch):
+    def fail_preexec(*args, **kwargs):
+        raise subprocess.SubprocessError("Exception occurred in preexec_fn")
+
+    monkeypatch.setattr(entry.subprocess, "run", fail_preexec)
+    result = run_the_real_check(tmp_path, {"x.txt": "x"}, [sys.executable, "-c", "print('unsafe')"])
+    assert result["reason_code"] == "check_not_executable:SubprocessError"
+    assert result["completed"] is False and result["exit_code"] is None
 
 
 def test_the_check_environment_is_built_and_never_inherited(tmp_path):
@@ -442,16 +517,3 @@ def test_main_uploads_the_result_the_driver_will_verify(tmp_path, monkeypatch):
 def test_the_namespace_probe_runs_in_a_throwaway_child_and_never_raises():
     """On a kernel that forbids unprivileged user namespaces this must be False, not an exception."""
     assert entry.network_isolation_available() in {True, False}
-
-
-def test_clearing_the_resolver_is_reported_as_what_it_achieved(monkeypatch, tmp_path):
-    resolv = tmp_path / "resolv.conf"
-    resolv.write_text("nameserver 169.254.169.254\n", encoding="utf-8")
-    monkeypatch.setattr(entry, "Path", lambda _: resolv)
-    assert REAL_DISABLE_DNS_RESOLUTION() == "cleared"
-    assert resolv.read_text() == ""
-
-
-def test_a_resolver_that_could_not_be_cleared_is_reported_rather_than_assumed(monkeypatch, tmp_path):
-    monkeypatch.setattr(entry, "Path", lambda _: tmp_path / "missing-directory" / "resolv.conf")
-    assert REAL_DISABLE_DNS_RESOLUTION().startswith("unavailable:")

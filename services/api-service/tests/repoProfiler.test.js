@@ -6,6 +6,9 @@ const {
   detectSecurityLibs,
   parseDependencies,
   validateInterpretation,
+  interpretWithLLM,
+  redactRepositoryContent,
+  llmProfilingEnabled,
   FILE_MAX_RESPONSE_BYTES,
   TREE_MAX_RESPONSE_BYTES,
   GITHUB_RATE_LIMIT_WARN_THRESHOLD,
@@ -181,6 +184,68 @@ describe('repoProfiler — deterministic profile', () => {
 });
 
 describe('repoProfiler — LLM validation', () => {
+  const originalEnv = Object.fromEntries([
+    'REPO_PROFILER_LLM_ENABLED', 'REPO_PROFILER_ALLOW_SOURCE_EXPORT',
+    'REPO_PROFILER_LLM_MODEL', 'OPENAI_API_KEY',
+  ].map((key) => [key, process.env[key]]));
+
+  afterEach(() => {
+    for (const [key, value] of Object.entries(originalEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  test('an API key alone cannot export repository source', async () => {
+    process.env.OPENAI_API_KEY = 'test-only-key';
+    const result = await interpretWithLLM({ languages: [], security_libraries: [], directory_structure: {} }, {
+      'src/auth.js': 'const password = "must-not-leave";',
+    });
+    expect(result.interpretation).toBeNull();
+    expect(result.reason).toMatch(/not explicitly enabled/);
+  });
+
+  test('explicit source consent still requires an explicit model', async () => {
+    process.env.OPENAI_API_KEY = 'test-only-key';
+    process.env.REPO_PROFILER_LLM_ENABLED = 'true';
+    process.env.REPO_PROFILER_ALLOW_SOURCE_EXPORT = 'true';
+    const result = await interpretWithLLM({ languages: [], security_libraries: [], directory_structure: {} }, {});
+    expect(result.interpretation).toBeNull();
+    expect(result.reason).toMatch(/MODEL not set/);
+  });
+
+  test('repository source export requires two explicit opt-ins', () => {
+    process.env.REPO_PROFILER_LLM_ENABLED = 'true';
+    expect(llmProfilingEnabled()).toBe(false);
+    process.env.REPO_PROFILER_ALLOW_SOURCE_EXPORT = 'true';
+    expect(llmProfilingEnabled()).toBe(true);
+  });
+
+  test('redacts credentials without mutating the input or changing line count', () => {
+    const source = [
+      'api_key = "sk-examplecredential123456"',
+      'Authorization: Bearer bearer-value-12345',
+      'DATABASE_URL="postgres://user:database-password@example.test/db"',
+      'const password = `super-secret-password`;',
+    ].join('\n');
+    const redacted = redactRepositoryContent(source);
+    expect(redacted).not.toContain('examplecredential123456');
+    expect(redacted).not.toContain('bearer-value-12345');
+    expect(redacted).not.toContain('database-password');
+    expect(redacted).not.toContain('super-secret-password');
+    expect(redacted).toContain('[REDACTED_SECRET]');
+    expect(redacted.split('\n')).toHaveLength(source.split('\n').length);
+    expect(source).toContain('super-secret-password');
+  });
+
+  test('redacts multiline private keys while preserving line structure', () => {
+    const source = 'before\n-----BEGIN PRIVATE KEY-----\nabc123\ndef456\n-----END PRIVATE KEY-----\nafter';
+    const redacted = redactRepositoryContent(source);
+    expect(redacted).not.toContain('abc123');
+    expect(redacted).not.toContain('def456');
+    expect(redacted.split('\n')).toHaveLength(source.split('\n').length);
+  });
+
   test('passes through valid interpretation', () => {
     const deterministic = {
       security_libraries: [{ library: 'helmet', purpose: 'security headers' }],

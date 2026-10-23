@@ -8,6 +8,9 @@ jest.mock('axios', () => {
   return fn;
 });
 jest.mock('../services/githubAppAuth', () => ({ getInstallationToken: jest.fn(), getAppBotLogin: jest.fn() }));
+// These tests exercise publishing mechanics after release admission; the actual
+// fail-closed production policy is covered independently in qualityPublication.test.js.
+jest.mock('../quality-release.json', () => ({ schema_version: 'v1', remediation_release_verified: true }));
 
 const axios = require('axios');
 const githubAppAuth = require('../services/githubAppAuth');
@@ -24,6 +27,8 @@ const base = 'b'.repeat(40);
 const tree = 'c'.repeat(40);
 const actionId = 'action-identity-0001';
 const digest = 'd'.repeat(64);
+const ORIGINAL_QUERY = '  const rows = await db.query(`SELECT * FROM orders WHERE id = ${id}`);';
+const SOURCE_FILE = [...Array.from({ length: 11 }, (_, i) => `// line ${i + 1}`), ORIGINAL_QUERY, '// end'].join('\n');
 
 function payload(overrides = {}) {
   return {
@@ -41,6 +46,7 @@ function payload(overrides = {}) {
 }
 
 function repositoryResponse(request) {
+  if (request.url.includes('/contents/services/orders.js')) return { data: { content: Buffer.from(SOURCE_FILE).toString('base64') } };
   if (request.url.endsWith('/repos/owner/repo')) return { data: { full_name: 'owner/repo' } };
   if (request.url.includes('/installation/repositories')) return { data: { repositories: [{ full_name: 'owner/repo' }] } };
   if (request.url.includes('/collaborators/developer/permission')) return { data: { permission: 'write' } };
@@ -360,13 +366,13 @@ function fixSection(overrides = {}) {
     proof: 'regression test tests/orders.regression.test.js asserts that the SQL injection at services/orders.js:12 is no longer reproducible; it failed on the original code and passed on the fix.',
     evidence: ['Regression test tests/orders.regression.test.js: failed on the original code, passed on the fix.', 'Syntax check: passed on the fixed file.'],
     limitations: ['verification ran in the development local sandbox without network, kernel, or filesystem isolation'],
-    verification_level: 'development_unverified', skipped_reason: '', finding_body: '', finding_ids: ['f-sql-1'], covered_by: '',
+    verification_level: 'isolated_job', skipped_reason: '', finding_body: '', finding_ids: ['f-sql-1'], covered_by: '',
     extra_hunks: [],
     ...overrides,
   };
 }
 
-const VERIFIED_LINE = 'Verified: regression test failed on the original code and passed with this change (development sandbox).';
+const VERIFIED_LINE = 'Verified: regression test failed on the original code and passed with this change (isolated sandbox (Cloud Run job, network denied)).';
 
 const FINDING_BODY = '🔴 **HIGH** — SQL injection\n\n> Template literal in db.query\n\n**Confidence:** 85%\n\n**Fix:** Use a parameterized query.';
 const PLACED = { created: false, placement: 'inline' };
@@ -435,9 +441,6 @@ test('a verified fix is appended to the existing finding comment as a suggestion
 test.each([
   ['independent_sandbox', 'isolated sandbox'],
   ['isolated_job', 'isolated sandbox (Cloud Run job, network denied)'],
-  ['development_unverified', 'development sandbox'],
-  ['', 'development sandbox'],
-  ['some_level_from_the_future', 'development sandbox'],
 ])('the verified line names the sandbox for verification level "%s"', async (level, where) => {
   const comments = findingCommentGitHub({ id: 77, body: `${FINDING_MARKER}\n**SQL injection**\nUse parameters.`, user: { login: 'mitig8it[bot]' }, path: 'services/orders.js', line: 12, side: 'RIGHT' });
   const result = await publishFindingFixSections(fixPayload([fixSection({ verification_level: level })]));
@@ -447,25 +450,24 @@ test.each([
 
 // The one level where no test ran gets a different sentence, because the sentence above claims a
 // test result. `contracts/repair-v1.md` states the five clauses it summarizes.
-test('the static assertion level says what was checked and that nothing was executed', async () => {
+test.each(['static_assertion', 'development_unverified', '', 'some_level_from_the_future'])('unexecuted or unknown verification %s cannot publish replacement code', async (level) => {
   const comments = findingCommentGitHub({ id: 77, body: `${FINDING_MARKER}\n**SQL injection**\nUse parameters.`, user: { login: 'mitig8it[bot]' }, path: 'services/orders.js', line: 12, side: 'RIGHT' });
   const result = await publishFindingFixSections(fixPayload([fixSection({
-    verification_level: 'static_assertion',
+    verification_level: level,
     proof: '',
     evidence: [],
     limitations: ['nothing was executed: the repair was checked by re-running the rule that flagged the finding over the original and the patched file, not by running a test'],
   })]));
   expect(result.state).toBe('published');
   const body = comments[0].body;
-  expect(body).toContain('Verified: the rule that flagged this line no longer matches the patched file and nothing else in the file changed. No code was executed.');
+  expect(body).toContain('Automatic replacement withheld:');
+  expect(body).not.toContain('```');
   // It must never claim a test ran, in the verified line or in either fallback below it.
   expect(body).not.toContain('regression test failed on the original code');
   expect(body).not.toContain('development sandbox');
   expect(body).not.toContain('verification passed in the sandbox');
   // And the details say what was and was not established, without inventing a sandbox.
-  expect(body).toContain('**Proof:** the rule that produced this finding matched the original file at this line and matches no line of the patched file.');
-  expect(body).toContain('**Evidence:** no rule that was not already matching this file matches the patched file');
-  expect(body).toContain('**Limitations:** nothing was executed:');
+  expect(body).not.toContain('Verified:');
 });
 
 test('the Cloud Run job sandbox is never described to a reviewer as a development sandbox', async () => {
@@ -501,69 +503,144 @@ test('a hunk the comment cannot carry and the diff does not show falls back to t
   const comments = findingCommentGitHub({ id: 79, body: `${FINDING_MARKER}\n**Command injection**`, user: { login: 'mitig8it[bot]' }, path: 'services/orders.js', line: 12, side: 'RIGHT' },
     { handle: (request) => (request.url.includes('/pulls/9/files') ? { data: [{ filename: 'services/orders.js', patch: '@@ -12,1 +12,1 @@\n+  new' }] } : null) });
   const outside = await publishFindingFixSections(fixPayload([fixSection({ hunk: { start_line: 10, end_line: 14, original_lines: [], replacement_lines: ['x'] } })]));
-  expect(outside.results[0]).toMatchObject({ mode: 'diff', updated: true, reason: 'the fix changes lines 10-14, and this comment can only carry a suggestion for line 12' });
-  expect(comments[0].body).toContain(`<!-- mitig8it-fix:${CANDIDATE} -->\n\`\`\`diff\n--- a/services/orders.js\n+++ b/services/orders.js\n@@ -12,1 +12,1 @@\n-  old\n+  new\n\`\`\`\nShown as a diff: the fix changes lines 10-14, and this comment can only carry a suggestion for line 12.\n${VERIFIED_LINE}\n\n<details>`);
-  expect(comments[0].body).not.toContain('```suggestion');
+  expect(outside.results[0]).toMatchObject({ mode: 'diff', updated: true });
+  expect(comments[0].body).toContain('Automatic replacement withheld:');
+  expect(comments[0].body).not.toContain('```');
 
   const regions = await publishFindingFixSections(fixPayload([fixSection({ hunk: null, not_suggestable_reason: 'multiple_files' })]));
   expect(regions.results[0]).toMatchObject({ mode: 'diff', reason: 'the verified fix changes more than one file' });
-  expect(comments[0].body).toContain('Shown as a diff: the verified fix changes more than one file.');
+  expect(comments[0].body).toContain('Automatic replacement withheld: the verified fix changes more than one file.');
 });
 
 // A candidate whose change has two regions: the one on the finding's line is the suggestion
 // in the finding comment; an added import on its own line in the diff gets a second inline
 // comment on that line carrying the same candidate marker, kept in place on a retry and
 // removed when a regeneration no longer needs it.
-test('an added import in the diff becomes a second suggestion comment on its line, idempotently', async () => {
+test('legacy separate import edits cannot publish an independently clickable partial fix', async () => {
   const github = emptyPullRequestGitHub({ patch: '@@ -1,3 +1,5 @@\n context\n+const cp = require(\'child_process\');\n context\n@@ -10,3 +12,5 @@\n context\n+  const rows = await db.query(`SELECT * FROM orders WHERE id = ${id}`);\n+  more\n context\n context' });
   const importHunk = { start_line: 2, end_line: 2, original_lines: ["const cp = require('child_process');"], replacement_lines: ["const cp = require('child_process');", "const { execFile } = require('child_process');"] };
   const first = await publishFindingFixSections(fixPayload([fixSection({ finding_body: FINDING_BODY, extra_hunks: [importHunk] })]));
-  expect(first.results[0]).toMatchObject({ comment_id: 500, mode: 'suggestion', updated: true, created: true, placement: 'inline' });
-  expect(github.created.inline.map((item) => [item.path, item.start_line, item.line])).toEqual([['services/orders.js', undefined, 12], ['services/orders.js', undefined, 2]]);
-  const [finding, extra] = github.reviewComments;
-  expect(finding.body).toContain(`\`\`\`suggestion\n  const rows = await db.query('SELECT * FROM orders WHERE id = $1', [id]);\n\`\`\`\n${VERIFIED_LINE}\n\n<details>`);
+  expect(first.results[0]).toMatchObject({ comment_id: 500, mode: 'diff', updated: true, created: true, placement: 'inline' });
+  expect(github.created.inline).toHaveLength(1);
+  const [finding] = github.reviewComments;
+  expect(finding.body).toContain('a partial suggestion would omit required changes');
+  expect(finding.body).not.toContain('```');
   expect(finding.body).not.toContain('Also add');
-  expect(extra.body).toBe([
-    '<!-- mitig8it-fix-extra:fp-sql-1:0 -->', `<!-- mitig8it-fix:${CANDIDATE} -->`,
-    '```suggestion', "const cp = require('child_process');", "const { execFile } = require('child_process');", '```',
-    'Part of the verified fix for `services/orders.js` line 12; the finding comment there has the details.',
-    `<!-- /mitig8it-fix:${CANDIDATE} -->`,
-  ].join('\n'));
 
   // The same input again writes nothing; a regeneration without the import removes the extra comment.
   const second = await publishFindingFixSections(fixPayload([fixSection({ finding_body: FINDING_BODY, extra_hunks: [importHunk] })]));
-  expect(second.results[0]).toMatchObject({ mode: 'suggestion', updated: false });
-  expect(github.created.inline).toHaveLength(2);
+  expect(second.results[0]).toMatchObject({ mode: 'diff', updated: false });
+  expect(github.created.inline).toHaveLength(1);
   expect(axios.mock.calls.filter(([request]) => request.method === 'patch' || request.method === 'delete')).toHaveLength(0);
   const regenerated = 'c1d2e3f4-0000-4000-8000-000000000004';
   await publishFindingFixSections(fixPayload([fixSection({ candidate_id: regenerated, finding_body: FINDING_BODY })]));
-  expect(axios.mock.calls.filter(([request]) => request.method === 'delete').map(([request]) => request.url)).toEqual([expect.stringMatching(/\/pulls\/comments\/501$/)]);
+  expect(axios.mock.calls.filter(([request]) => request.method === 'delete')).toHaveLength(0);
   expect(github.reviewComments[0].body).toContain(`<!-- mitig8it-fix:${regenerated} -->`);
 });
 
 // The same two regions when the import line is not in the diff: GitHub cannot take a comment
 // there, so the import is folded into a short note under the suggestion. A region that is
 // neither an import nor in the diff means the fix cannot be a suggestion at all.
-test('an added import outside the diff is folded into a note; any other region outside the diff makes the fix a diff', async () => {
+test('an import outside the diff withholds the complete repair instead of offering a partial fix and note', async () => {
   const github = emptyPullRequestGitHub();
   const importHunk = { start_line: 2, end_line: 2, original_lines: ['import os'], replacement_lines: ['import os', 'import ast'] };
   const first = await publishFindingFixSections(fixPayload([fixSection({ finding_body: FINDING_BODY, extra_hunks: [importHunk] })]));
-  expect(first.results[0]).toMatchObject({ mode: 'suggestion', created: true });
+  expect(first.results[0]).toMatchObject({ mode: 'diff', created: true });
   expect(github.created.inline).toHaveLength(1);
-  expect(github.reviewComments[0].body).toContain(`\`\`\`\n${VERIFIED_LINE}\nAlso add \`import ast\` at line 2, which is outside the pull request diff.\n\n<details>`);
+  expect(github.reviewComments[0].body).toContain('a partial suggestion would omit required changes');
+  expect(github.reviewComments[0].body).not.toContain('```');
+  expect(github.reviewComments[0].body).not.toContain('Also add');
 
   const other = { start_line: 40, end_line: 41, original_lines: ['a', 'b'], replacement_lines: ['c'] };
   const second = await publishFindingFixSections(fixPayload([fixSection({ candidate_id: 'c1d2e3f4-0000-4000-8000-000000000005', finding_body: FINDING_BODY, extra_hunks: [other] })]));
-  expect(second.results[0]).toMatchObject({ mode: 'diff', reason: 'the fix also changes lines 40-41, outside the pull request diff' });
-  expect(github.reviewComments[0].body).toContain('Shown as a diff: the fix also changes lines 40-41, outside the pull request diff.');
+  expect(second.results[0]).toMatchObject({ mode: 'diff', reason: 'the complete repair requires separate edits; a partial suggestion would omit required changes' });
   expect(github.reviewComments[0].body).not.toContain('```suggestion');
+});
+
+function completeRepair(original, replacement, evidence = {}) {
+  const sha = (text) => require('crypto').createHash('sha256').update(text).digest('hex');
+  return {
+    id: CANDIDATE, finding_snapshot_ids: ['finding-1'], verification_level: 'isolated_job',
+    file_manifest: { verified_tree_oid: tree, files: [{ path: 'services/orders.js',
+      base_sha256: sha(original), new_sha256: sha(replacement), contents_base64: Buffer.from(replacement).toString('base64') }] },
+    preview: { changes: [{ path: 'services/orders.js', original, replacement, unified_diff: '' }],
+      evidence: { status: 'passed', evidence_digest: digest, verified_tree_oid: tree, verification_level: 'isolated_job', ...evidence } },
+  };
+}
+
+function sectionsFor(repair, line = 2) {
+  // Exercise the actual control-plane serializer before the GitHub adapter; the
+  // only external behavior mocked here is GitHub's API.
+  const { buildSections } = require('../../../api-service/src/services/remediationInlineFixes');
+  return buildSections({ job: {}, candidates: [repair], findings: [{ id: 'finding-1', fingerprint: 'fp-sql-1',
+    file_path: 'services/orders.js', line_start: line, line_end: line }] });
+}
+
+test('the only clickable edit reproduces the entire verified file, including its required import', async () => {
+  const original = 'module.exports = function input(value) {\n  return eval(value);\n};\n';
+  const replacement = 'const { basename } = require("node:path");\nmodule.exports = function input(value) {\n  return basename(value);\n};\n';
+  const github = emptyPullRequestGitHub({ source: original, patch: '@@ -0,0 +1,3 @@\n+module.exports = function input(value) {\n+  return eval(value);\n+};' });
+  const [section] = sectionsFor(completeRepair(original, replacement));
+  section.finding_body = FINDING_BODY;
+  expect(section.extra_hunks).toEqual([]);
+  const result = await publishFindingFixSections(fixPayload([section]));
+  expect(result.results[0].mode).toBe('suggestion');
+  const carrying = github.created.inline.filter((item) => item.body.includes('```suggestion'));
+  expect(carrying).toHaveLength(1);
+  const edit = carrying[0];
+  const code = edit.body.match(/```suggestion\n([\s\S]*?)\n```/)[1].split('\n');
+  const lines = original.trimEnd().split('\n');
+  lines.splice((edit.start_line || edit.line) - 1, edit.line - (edit.start_line || edit.line) + 1, ...code);
+  expect(lines.join('\n') + '\n').toBe(replacement);
+  expect(code.join('\n')).toContain('require("node:path")');
+  expect(() => new (require('vm').Script)(lines.join('\n'))).not.toThrow();
+});
+
+test.each(['syntax_check_failed', 'undefined_name:missingHelper', 'missing_dependency:unavailable-package'])(
+  'a repair rejected for %s reaches GitHub only as an explanation', async (reason) => {
+    const original = 'function unsafe(value) {\n  return eval(value);\n}\n';
+    const replacement = reason.startsWith('syntax') ? 'function unsafe(value) {\n  return (\n}\n'
+      : reason.startsWith('missing_dependency') ? 'const dependency = require("unavailable-package");\nmodule.exports = dependency;\n'
+        : 'function unsafe(value) {\n  return missingHelper(value);\n}\n';
+    const comments = findingCommentGitHub({ id: 77, body: `${FINDING_MARKER}\nFinding`, user: { login: 'mitig8it[bot]' }, path: 'services/orders.js', line: 2, side: 'RIGHT' });
+    const sections = sectionsFor(completeRepair(original, replacement, { status: 'failed', reason_code: reason }));
+    await publishFindingFixSections(fixPayload(sections));
+    expect(comments[0].body).toContain('No automatic fix:');
+    expect(comments[0].body).not.toContain('```');
+    expect(comments[0].body).not.toContain('missingHelper');
+    expect(comments[0].body).not.toContain('Verified:');
+  }
+);
+
+test('replacement bytes changed after verification cannot become a suggestion', async () => {
+  const original = 'function unsafe(value) {\n  return eval(value);\n}\n';
+  const verified = 'function unsafe(value) {\n  return JSON.parse(value);\n}\n';
+  const repair = completeRepair(original, verified);
+  repair.preview.changes[0].replacement = 'return undefinedHelper(value);';
+  const [section] = sectionsFor(repair);
+  expect(section.skipped_reason).toContain('does not match');
+  expect(section.hunk).toBeNull();
+  expect(section.unified_diff).toBe('');
+});
+
+test.each([
+  { hunk: { start_line: 12, end_line: 12, original_lines: ['wrong source'], replacement_lines: ['missingHelper()'] } },
+  { path: 'another-file.js' },
+])('a head-text or file-anchor mismatch cannot produce replacement code', async (override) => {
+  const comments = findingCommentGitHub({ id: 77, body: `${FINDING_MARKER}\nFinding`, user: { login: 'mitig8it[bot]' }, path: 'services/orders.js', line: 12, side: 'RIGHT' });
+  await publishFindingFixSections(fixPayload([fixSection(override)]));
+  expect(comments[0].body).toContain('Automatic replacement withheld:');
+  expect(comments[0].body).not.toContain('```');
+  expect(comments[0].body).not.toContain('missingHelper');
+  expect(comments[0].body).not.toContain('Verified:');
 });
 
 // The region on the finding's line may lie outside the single-line comment's range (the
 // fix rewrites the line above the sink) while still being in the diff: it is suggested in
 // a separate comment on its own lines, and the finding comment says so under the verified line.
 test('a primary region the finding comment cannot carry is suggested in a separate comment on its lines', async () => {
-  const github = emptyPullRequestGitHub();
+  const source = [...Array.from({ length: 9 }, () => '// context'), '  const target = path.join(REPORT_DIR, req.query.name);', '  fs.readFile(target, (error, data) => {', ORIGINAL_QUERY].join('\n');
+  const github = emptyPullRequestGitHub({ source });
   const hunk = { start_line: 10, end_line: 11, original_lines: ['  const target = path.join(REPORT_DIR, req.query.name);', '  fs.readFile(target, (error, data) => {'],
     replacement_lines: ['  const baseDir = path.resolve(REPORT_DIR);', '  const target = path.resolve(baseDir, String(req.query.name));', '  fs.readFile(target, (error, data) => {'] };
   const result = await publishFindingFixSections(fixPayload([fixSection({ finding_body: FINDING_BODY, hunk })]));
@@ -608,10 +685,11 @@ test('fix sections never edit a marker comment by another author and are not wri
 
 // A scripted pull request without a finding comment: the diff shows services/orders.js
 // lines 10 to 14 (one hunk), inline and pull request comment creation are recorded.
-function emptyPullRequestGitHub({ patch = '@@ -10,3 +10,5 @@\n context\n+  const rows = await db.query(`SELECT * FROM orders WHERE id = ${id}`);\n+  more\n context\n context', issueComments = [] } = {}) {
+function emptyPullRequestGitHub({ patch = '@@ -10,3 +10,5 @@\n context\n+  const rows = await db.query(`SELECT * FROM orders WHERE id = ${id}`);\n+  more\n context\n context', issueComments = [], source = SOURCE_FILE } = {}) {
   const reviewComments = [];
   const created = { inline: [], issue: [] };
   axios.mockImplementation(async request => {
+    if (request.url.includes('/contents/services/orders.js')) return { data: { content: Buffer.from(source).toString('base64') } };
     if (request.url.includes('/pulls/9/comments') && request.method === 'get') return { data: reviewComments };
     if (request.url.includes('/pulls/9/comments') && request.method === 'post') {
       const comment = { id: 500 + reviewComments.length, body: request.data.body, path: request.data.path, line: request.data.line, side: request.data.side, user: { login: 'mitig8it[bot]' } };
@@ -681,10 +759,9 @@ test('a finding line outside the diff falls back to a pull request comment that 
     reason: "this finding's line is not part of the pull request diff, so GitHub allows neither an inline comment nor a suggestion there", created: true, placement: 'pull_request' }]);
   expect(github.created.inline).toHaveLength(0);
   const body = github.issueComments[0].body;
-  expect(body.startsWith(`${FINDING_MARKER}\n**Verified fix for \`services/orders.js\` line 35.** This line is not part of the pull request diff, so GitHub does not accept an inline comment on it; the finding and its verified fix are reported here instead.\n\n${FINDING_BODY}`)).toBe(true);
-  expect(body).toContain("Shown as a diff: this finding's line is not part of the pull request diff, so GitHub allows neither an inline comment nor a suggestion there.");
-  expect(body).toContain('```diff\n--- a/services/orders.js');
-  expect(body).not.toContain('```suggestion');
+  expect(body.startsWith(`${FINDING_MARKER}\n**Repair for \`services/orders.js\` line 35.** This line is not part of the pull request diff, so GitHub does not accept an inline comment on it; the finding and the repair status are reported here instead.\n\n${FINDING_BODY}`)).toBe(true);
+  expect(body).toContain("Automatic replacement withheld: this finding's line is not part of the pull request diff");
+  expect(body).not.toContain('```');
 
   const regenerated = 'c1d2e3f4-0000-4000-8000-000000000003';
   const second = await publishFindingFixSections(fixPayload([{ ...section, candidate_id: regenerated }]));

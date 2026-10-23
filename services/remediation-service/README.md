@@ -52,7 +52,11 @@ A group proposal is one set of hunks plus one regression test per finding, and e
 
 Candidates are then combined into one tree and that union is verified again, because per-candidate evidence never covers candidate interaction; a prerequisite hunk two candidates share is applied once, deduplicated by content and location. A later group whose patch changes a line range an already accepted candidate changes is reported `unsupported` with reason `overlapping_candidates` and is left out of the batch; the earlier candidates still ship. Every candidate's `finding_ids` names exactly the finding its evidence covers, and `evidence.groups` records each group's finding IDs, state, reason, and `candidate_ids`, so partial coverage is visible rather than silent.
 
-Before a proposal is accepted, every changed file passes a syntax check, a runtime load check, and a static undefined-name check. The static check parses a Python file with `ast` and rejects a name the change introduces that nothing in the file binds (a builtin, parameter, import, definition, or assignment anywhere in the file) as `undefined_name:<name>`, since such a name raises `NameError` only when its function runs. A star import or a dynamic-scope call makes the check abstain. JavaScript and TypeScript get a lexical equivalent for identifiers the change introduces in call or member position, such as `execFile(...)` added without its `require`.
+Before a proposal is accepted, every changed file passes parse-only syntax and static undefined-name checks. Proposal construction never loads repository modules or executes generated tests on the remediation service host; runtime execution belongs to the configured verifier sandbox. This also applies to checkpoint restoration, per-finding splits and combined batches. The static check parses a Python file with `ast` and rejects a name the change introduces that nothing in the file binds (a builtin, parameter, import, definition, or assignment anywhere in the file) as `undefined_name:<name>`, since such a name raises `NameError` only when its function runs. A star import or a dynamic-scope call makes the check abstain. JavaScript and TypeScript get a lexical equivalent for identifiers the change introduces in call or member position, such as `execFile(...)` added without its `require`.
+
+Repair-provider context passes through a run-scoped deterministic credential redactor. Complete snapshot files are scanned before retrieval windows or truncation; recognized key formats, credential-name literals and bare configuration values, bearer/basic tokens, private-key blocks, and **all URLs** are hidden as `__MITIG8IT_REDACTED_SECRET__`. Known values are also removed from metadata, provider echoes, failure output, pending actions, and completed checkpoints. Physical line boundaries and numbered lines are preserved, and original requests/snapshots are not mutated. Masked `original_lines` are rebound only to an exact matching range of the authoritative snapshot during patch validation; placeholders in replacement code or model tests are rejected rather than executed. Fixed service proofs can be restored only from the service's own current proof, never from a model-provided replacement value.
+
+Malformed/private-key blocks, ambiguous concatenated credential literals, unsafe short credentials, and reserved-marker collisions stop the agent as `source_secret_redaction_failed`. Checkpoint verification data changed by redaction is discarded instead of being reused under its old evidence digest. This protects provider messages and agent checkpoints, not the original input/result artifact store: those retain exact source for verification and require the documented encrypted production backend. Pattern redaction is not a guarantee against arbitrary obfuscation or unknown secret formats; repository owners must still remove/rotate committed credentials and authorize the configured provider to process the remaining source.
 
 ## Evidence shape
 
@@ -139,6 +143,11 @@ SANDBOX_NODE_LIMITS_ATTESTED=true
 Do not set the two attestation variables until a deployed default-deny policy and node-level process/log/ephemeral-storage limits have been exercised against fork bombs, output floods, internet, metadata, Kubernetes API, and private-network canaries. The runner pod's service account must have zero API permissions. Broker credentials and attestation keys belong only to the trusted broker/API containers and are never mounted in a workload pod.
 
 ## Development mode without cloud services
+
+The local subprocess driver is refused when `DEPLOY_ENVIRONMENT`, `ENVIRONMENT`, or
+`NODE_ENV` declares `production` or `prod`. API and dedicated worker startup validate this
+before opening execution state or claiming jobs. A request that disallows development
+verification is refused before invoking a configured in-process local broker or driver.
 
 Two environment switches replace the managed dependencies for local work. Both default to the production implementation, and both log a warning when the development implementation is selected.
 
@@ -301,12 +310,12 @@ the rest of the check set from the candidate itself.
   findings and the rest are reported in `skipped` as `not_repaired` or
   `regression_test_not_reproducing`. Test content is untrusted repository-adjacent code and
   runs only inside the sandbox driver, exactly like any other check.
-- After the syntax check, patch policy also loads every changed JavaScript or Python file from
-  a temporary copy of the candidate tree (`require` under Node, `runpy.run_path` under Python
-  with a module name that is not `__main__`). A module that throws on load, such as a
-  `ReferenceError` or `NameError` for an identifier used without its import, is rejected as
-  `candidate_load_failed`; a dependency the snapshot does not carry, or an environment variable a
-  Python module reads at import time, is recorded as a limitation instead.
+- Patch policy defaults `load_checks` to false and records that no runtime load occurred on
+  the service host. Every production construction path explicitly keeps it false. A module's
+  top level is untrusted execution, even when its argv is fixed and environment sanitized;
+  generated tests must exercise it through the configured verifier sandbox. The optional
+  `load_checks=True` helper remains only for explicit diagnostics on trusted development
+  fixtures. Static syntax/name checks continue to reject malformed code before verification.
 - Every changed `.js`, `.cjs`, and `.mjs` file also gets a `node --check` `typecheck` check, and
   every changed `.py` file a `python3 -m py_compile` one. They need no fixture and no installed
   dependency, so they are the one behavior check every repository can always run.

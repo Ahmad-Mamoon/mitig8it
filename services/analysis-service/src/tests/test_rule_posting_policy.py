@@ -65,6 +65,7 @@ def _finding(rule_id: str, line: int = 1) -> dict:
 @pytest.fixture
 def quarantine(monkeypatch):
     monkeypatch.setattr(main, "QUARANTINED_RULE_IDS", frozenset({"opengrep.noisy.rule"}))
+    monkeypatch.setattr(main, "PUBLICATION_RULE_IDS", main.PUBLICATION_RULE_IDS | {"opengrep.good.rule"})
 
 
 class TestQuarantineSet:
@@ -113,6 +114,7 @@ class TestPartition:
         monkeypatch.setattr(
             main, "QUARANTINED_RULE_IDS", frozenset({"opengrep.noisy.rule", "authz.missing_function_level"})
         )
+        monkeypatch.setattr(main, "PUBLICATION_RULE_IDS", main.PUBLICATION_RULE_IDS | {"null.pointer.deref"})
         postable, quarantined = partition_by_posting_policy(
             [_finding("authz.missing_function_level"), _finding("null.pointer.deref", 2)]
         )
@@ -122,9 +124,9 @@ class TestPartition:
     def test_an_empty_list_is_handled(self):
         assert partition_by_posting_policy([]) == ([], [])
 
-    def test_a_finding_without_a_rule_id_is_still_posted(self):
+    def test_a_finding_without_a_rule_id_is_withheld(self):
         postable, quarantined = partition_by_posting_policy([{"file_path": "a.ts"}])
-        assert len(postable) == 1 and quarantined == []
+        assert postable == [] and len(quarantined) == 1
 
     def test_counts_are_grouped_by_rule(self):
         counts = quarantined_counts_by_rule(
@@ -196,6 +198,7 @@ class TestEndpointsReportTheWithheld:
 
     def test_a_quarantined_tier2_finding_does_not_reach_the_response(self, monkeypatch):
         monkeypatch.setattr(main, "QUARANTINED_RULE_IDS", frozenset({"opengrep.noisy.rule"}))
+        monkeypatch.setattr(main, "PUBLICATION_RULE_IDS", main.PUBLICATION_RULE_IDS | {"opengrep.good.rule"})
         monkeypatch.setattr(
             main,
             "run_opengrep_with_limitations",

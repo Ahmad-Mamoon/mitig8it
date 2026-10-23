@@ -261,6 +261,28 @@ Analysis requests and metrics require `x-internal-secret`. The expected value is
 
 ## Key Environment
 
+### LLM recommendations for existing findings
+
+The existing Tier 3 call requests a structured recommendation with a repository-specific
+fix, a proposed regression test, uncertainty, and code citations. Citation paths, new-file
+line numbers, and quoted text must match the context supplied to the model. Diff context
+is selected around the finding using unified-diff hunk positions, including findings far
+down a file. Matching a citation establishes its source; it does not prove the model's
+security reasoning or execute its proposed test.
+
+Accepted recommendations are labelled advisory and not verified. They appear in
+`llm_triage.recommendation` in the analysis result and in
+`evidence_details.extra.llm_recommendation` for gRPC transport and persistence. The fix
+also populates the existing `remediation` field. Invalid structured recommendations are
+discarded; ordinary triage enrichment remains available. Provider failure returns the
+original findings.
+
+This uses the existing configured provider and call, with no separate recommendation
+request or LLM judge. The larger response can still consume more tokens. It does not add
+independent vulnerability discovery, model routing, or change finding suppression policy.
+
+### Variables
+
 - `GITHUB_SERVICE_INTERNAL_SECRET`
 - `ANALYSIS_SERVICE_INTERNAL_SECRET`
 - `LLM_PROVIDER`

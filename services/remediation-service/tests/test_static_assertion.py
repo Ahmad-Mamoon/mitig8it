@@ -396,9 +396,8 @@ async def test_the_evidence_names_every_clause_and_carries_a_digest(request_payl
 def test_clause_five_reaches_the_bundle_build_so_the_patched_module_is_never_required(request_payload):
     """The bundle a statically asserted candidate is built from loads nothing.
 
-    The ordinary bundle build requires the patched module to check that it still loads, which runs
-    whatever that module runs on import. A candidate whose evidence says nothing was executed
-    cannot have been built that way, so the static assertion path asks for the build without it.
+    Explicit development load diagnostics run whatever the module runs on import. Ordinary
+    bundle construction and the static assertion path both disable that execution.
     The check is recorded as not performed, because a reviewer is owed the fact that nobody has
     established the patched module still loads.
     """
@@ -414,7 +413,7 @@ def test_clause_five_reaches_the_bundle_build_so_the_patched_module_is_never_req
         "replacement_lines": [REPAIRED_LINE.rstrip("\n"), "const broken = null.missing;"],
     }
     with pytest.raises(PatchPolicyError) as error:
-        build_patch_bundle(request, snapshot, [change], None)
+        build_patch_bundle(request, snapshot, [change], None, load_checks=True)
     assert error.value.code == f"candidate_load_failed:{path}"
     bundle = build_patch_bundle(request, snapshot, [change], None, load_checks=False)
     assert NO_LOAD_CHECK_LIMITATION.format(path=path) in bundle.limitations

@@ -847,33 +847,6 @@ async function recordAppliedOutcomes(client, action) {
   return recorded;
 }
 
-const TERMINAL_ACTION_STATES = new Set(['applied', 'completed', 'cancelled', 'superseded', 'blocked', 'failed', 'rejected']);
-
-async function updateAction(action, state, fields = {}) {
-  return scopedTransaction({ tenantId: action.installation_id, worker: true }, async (client) => {
-    const result = await client.query(
-      `UPDATE remediation_actions SET state=$1, external_operation_id=COALESCE($2,external_operation_id),
-       observed_commit_sha=COALESCE($3,observed_commit_sha), observed_tree_oid=COALESCE($6,observed_tree_oid),
-       failure_reason=$4, updated_at=NOW() WHERE id=$5 RETURNING *`,
-      [state, fields.operationId || null, fields.commitSha || null, fields.reason ? JSON.stringify(fields.reason) : null, action.id, fields.treeOid || null]
-    );
-    if (result.rowCount) await audit(client, null, action.repository_id, `remediation.action.${state}`, 'remediation_action', action.id, fields.reason || {});
-    // A write that can no longer progress must not hold the pull request writer lease.
-    if (result.rowCount && TERMINAL_ACTION_STATES.has(state) && state !== 'applied') {
-      await releaseWriterLease(client, result.rows[0].pull_request_id, action.id);
-    }
-    if (result.rowCount && state === 'applied' && fields.commitSha) {
-      await client.query(
-        `UPDATE merge_intents SET applied_sha=$2, state=CASE WHEN state='waiting_for_application' THEN 'waiting_for_checks' ELSE state END, updated_at=NOW()
-          WHERE action_id=$1 AND state='waiting_for_application'`,
-        [action.id, fields.commitSha]
-      );
-      await recordAppliedOutcomes(client, result.rows[0]);
-    }
-    return result.rows[0] || null;
-  });
-}
-
 // The applied commit is durable; the fresh analysis for the new head is enqueued once
 // per action and head. A failed notification never reverts an applied action.
 async function enterChecking(action, { commitSha, treeOid }) {
@@ -1044,20 +1017,6 @@ async function supersedeForHeadChange({ client, pullRequestId, newHeadSha, reaso
       [pullRequestId, newHeadSha, reason, ['waiting_for_application', 'waiting_for_checks', 'eligible', 'reconciling']]
     );
     return { jobs: jobs.rows.map((r) => r.id), candidates: candidates.rows.map((r) => r.id), mergeIntents: intents.rows.map((r) => r.id) };
-  });
-}
-
-// After an apply commits, the applied candidates are recorded as applied and every
-// other candidate of the pull request is stale: it was verified against a head that no
-// longer exists. Nothing is rebased; a new generation on the new head replaces them.
-async function markCandidatesAfterApply(action, commitSha) {
-  return scopedTransaction({ tenantId: action.installation_id, worker: true }, async (client) => {
-    await client.query(
-      `UPDATE remediation_candidates SET rejection_reason=jsonb_build_object('code','applied','action_id',$2::text,'commit_sha',$3::text)
-        WHERE id = ANY($1::uuid[]) AND rejection_reason IS NULL`,
-      [action.candidate_ids, action.id, commitSha]
-    );
-    return supersedeForHeadChange({ client, pullRequestId: action.pull_request_id, newHeadSha: commitSha, reason: 'head_changed' });
   });
 }
 
@@ -1275,13 +1234,13 @@ module.exports = {
   claimNextJob, claimJobById, recordAttempt, heartbeat, deferForExternalExecution, reserveUsage, settleUsage, budgetSnapshot,
   usageCost, releaseStrandedReservations,
   completeStage, cancelJob, getActionForUser, recordSkippedFindings, mergeCarriedSkips,
-  updateAction, enterChecking, completeAction, appendEvent, audit,
+  enterChecking, completeAction, appendEvent, audit,
   reclaimExpiredLeases, redispatchStuckOutbox, quarantineExhaustedJobs,
   listActionsAwaitingVerification, supersedeForHeadChange, supersedeForBranchPush,
   commitAppliesPublishedFix, recordObservedApply, blockingFindingsForAction,
   recordVerificationCheck, listActionsNeedingVerificationCheck, actionCheckContext, recordRepairMemoryObservation,
   getCandidateForFeedback,
-  manifestDigestFor, selectCandidates, markCandidatesAfterApply, appliedReportForAction,
+  manifestDigestFor, selectCandidates, appliedReportForAction,
   recordResidualComment, listActionsNeedingResidualComment,
   createAutomaticJob, jobPublishContext, recordInlineFixesPublished, readyJobsWithPublishedInlineFixes,
   recordAppliedOutcomes,

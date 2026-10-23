@@ -11,6 +11,7 @@ const outbox = require('../services/remediationOutbox');
 const { executeClaimedJob } = require('../services/remediationWorkflow');
 const { startReconciler } = require('../services/remediationReconciler');
 const logger = require('../utils/logger');
+const { ensureDatabaseSchema } = require('../services/schemaBootstrap');
 
 const DEFAULT_POLL_MS = 5000;
 const MIN_POLL_MS = 1000;
@@ -91,11 +92,12 @@ if (require.main === module) {
       pool.end().finally(() => process.exit(0));
     });
   }
-  try {
+  (async () => {
     assertWorkerEnabled();
+    await ensureDatabaseSchema();
     stop = startRemediationWorker();
-  } catch (error) {
+  })().catch((error) => {
     logger.error('Remediation worker failed to start', { error: error.message });
     process.exit(1);
-  }
+  });
 }
