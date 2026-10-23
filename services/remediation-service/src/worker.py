@@ -12,6 +12,7 @@ from typing import Any
 
 from . import telemetry
 from .engine import RepairEngine
+from .sandbox import validate_sandbox_configuration
 from .executions import (
     LocalExecutionBackend,
     PostgresExecutionBackend,
@@ -228,6 +229,7 @@ async def run_worker_loop(backend: Backend, worker_id: str | None = None) -> Non
 
 
 async def main() -> None:
+    validate_sandbox_configuration()
     await run_worker_loop(create_execution_backend())
 
 

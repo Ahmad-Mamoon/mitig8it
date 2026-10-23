@@ -11,6 +11,7 @@ jest.mock('../src/db/findings', () => ({ listByAnalysisRun: jest.fn(async () => 
 jest.mock('../src/services/githubRemediationClient', () => ({ GitHubRemediationClient: jest.fn(() => ({})) }));
 jest.mock('../src/services/remediationVerificationCheck', () => ({ publishVerificationCheck: jest.fn() }));
 jest.mock('../src/utils/logger', () => ({ warn: jest.fn(), error: jest.fn(), info: jest.fn() }));
+jest.mock('../src/quality-release.json', () => ({ schema_version: 'v1', remediation_release_verified: true }));
 
 const remediationDb = require('../src/db/remediation');
 const findingsDb = require('../src/db/findings');
@@ -33,19 +34,26 @@ const ORIGINAL = ['const db = require("./db");', 'async function order(id) {', '
 const FIXED = ORIGINAL.replace('db.query(`SELECT * FROM orders WHERE id = ${id}`)', "db.query('SELECT * FROM orders WHERE id = $1', [id])");
 
 function candidate(overrides = {}) {
-  return {
+  const value = {
     id: '77777777-7777-4777-8777-777777777777', finding_snapshot_ids: ['f1'], artifact_digest: 'a'.repeat(64), rejection_reason: null,
-    verification_level: 'development_unverified',
+    verification_level: 'isolated_job',
     preview: {
       changes: [{ path: 'services/orders.js', original: ORIGINAL, replacement: FIXED, unified_diff: '--- a/services/orders.js\n+++ b/services/orders.js\n@@ -3 +3 @@\n-  old\n+  new' }],
       rationale: 'Parameterize the query.',
       reasoning: { intended_behavior: 'The order lookup returns the same row for the same id.' },
-      evidence: { status: 'passed', evidence_digest: 'c'.repeat(64), verification_level: 'development_unverified',
+      evidence: { status: 'passed', evidence_digest: 'c'.repeat(64), verification_level: 'isolated_job', verified_tree_oid: 'e'.repeat(40),
         generated_tests: [{ path: 'tests/orders.regression.test.js' }],
         limitations: ['verification ran in the development local sandbox without network, kernel, or filesystem isolation'] },
     },
     ...overrides,
   };
+  const sha = (text) => require('crypto').createHash('sha256').update(text).digest('hex');
+  if (overrides.verification_level) value.preview.evidence.verification_level = overrides.verification_level;
+  value.file_manifest = overrides.file_manifest || { verified_tree_oid: 'e'.repeat(40), files: (value.preview?.changes || []).map((change) => ({
+    path: change.path, base_sha256: sha(change.original), new_sha256: sha(change.replacement),
+    contents_base64: Buffer.from(change.replacement).toString('base64'),
+  })) };
+  return value;
 }
 
 function context(overrides = {}) {
@@ -108,7 +116,7 @@ test('sections carry a suggestion hunk, the stated intent, the proof, evidence, 
   expect(sections).toHaveLength(2);
   expect(sections[0]).toMatchObject({
     candidate_id: '77777777-7777-4777-8777-777777777777', finding_fingerprint: 'fp-sql', path: 'services/orders.js', finding_line: 3,
-    hunk: { start_line: 3, end_line: 3 }, not_suggestable_reason: '', verification_level: 'development_unverified',
+    hunk: { start_line: 3, end_line: 3 }, not_suggestable_reason: '', verification_level: 'isolated_job',
     stated_intent: 'The order lookup returns the same row for the same id.',
     proof: 'regression test tests/orders.regression.test.js asserts that the SQL injection at services/orders.js:3 is no longer reproducible; it failed on the original code and passed on the fix.',
     evidence: ['Regression test tests/orders.regression.test.js: failed on the original code, passed on the fix.', 'Syntax check: passed on the fixed file.', 'Evidence digest: cccccccccccc.'],
@@ -212,7 +220,7 @@ function perFindingCandidate(id, findingId, replacement, unifiedDiff) {
       rationale: 'One finding, one candidate.',
       reasoning: { intended_behavior: 'Legitimate input behaves as before.' },
       evidence: {
-        status: 'passed', evidence_digest: `sha256:${findingId.padEnd(64, '0')}`, verification_level: 'development_unverified',
+        status: 'passed', evidence_digest: 'c'.repeat(64), verification_level: 'isolated_job', verified_tree_oid: 'e'.repeat(40),
         generated_tests: [{ path: `.mitig8it/regression/${findingId}.test.py`, finding_id: findingId }],
         limitations: ["the repository's original test suite was not run"],
         summary: [
@@ -244,17 +252,19 @@ test('per-finding candidates each get their own section: a suggestion on the fin
       'Regression test .mitig8it/regression/f-cred.test.py failed on the original code and passed on the fix.',
       'Syntax check (generated_python_syntax) passed on the fix.',
       "Not run: the repository's original test suite was not run.",
-      'Evidence digest: sha256:f-cre.',
+      'Evidence digest: cccccccccccc.',
     ],
   });
   expect(sections[0].unified_diff).not.toContain('literal_eval');
   expect(sections[0].extra_hunks).toEqual([]);
-  // The eval fix is two regions: the finding's line is the hunk, the added import travels as an extra hunk.
+  // The import and sink replacement must be one atomic edit, never two buttons.
   expect(sections[1]).toMatchObject({
     path: 'text.py', finding_line: 13, not_suggestable_reason: '',
-    hunk: { start_line: 13, end_line: 13, original_lines: ['    result = eval(user_input)'], replacement_lines: ['    result = ast.literal_eval(user_input)'] },
-    extra_hunks: [{ start_line: 1, end_line: 1, original_lines: ['import sqlite3'], replacement_lines: ['import sqlite3', 'import ast'] }],
+    hunk: { start_line: 2, end_line: 13 },
+    extra_hunks: [],
   });
+  expect(sections[1].hunk.replacement_lines.join('\n')).toContain('import ast');
+  expect(sections[1].hunk.replacement_lines.join('\n')).toContain('ast.literal_eval');
   expect(sections[1].unified_diff).toContain('ast.literal_eval');
   expect(sections[1].evidence[0]).toBe('Regression test .mitig8it/regression/f-eval.test.py failed on the original code and passed on the fix.');
 });
@@ -298,11 +308,13 @@ test('publication carries the finding text for a finding without a comment and r
   expect(payload.sections[0].finding_body).toContain('**HIGH** — SQL injection');
   expect(payload.sections[1].finding_body).toBe('');
 
-  // The diff-range fallback: the adapter placed the fix in a pull request comment because the line is outside the diff.
+  // A prose-only fallback is a repair status, not a published verified suggestion.
   github.publishFindingFixSections.mockResolvedValueOnce({ state: 'published', results: [
     { finding_fingerprint: 'fp-sql', candidate_id: 'c', comment_id: 601, mode: 'diff', updated: true, reason: "this finding's line is not part of the pull request diff", created: true, placement: 'pull_request' },
   ] });
-  expect(await inline.publishInlineFixes(JOB, { githubClient: github })).toMatchObject({ published: true, comments_created: 0, pull_request_comments_created: 1, unplaced: 0 });
+  remediationDb.recordInlineFixesPublished.mockClear();
+  expect(await inline.publishInlineFixes(JOB, { githubClient: github })).toMatchObject({ published: false, reason: 'no_verified_suggestion_published', comments_created: 0, pull_request_comments_created: 1, unplaced: 0 });
+  expect(remediationDb.recordInlineFixesPublished).not.toHaveBeenCalled();
   findingsDb.listByAnalysisRun.mockReset();
   findingsDb.listByAnalysisRun.mockResolvedValue([]);
 });
@@ -331,7 +343,10 @@ test('the outbox routes remediation.ready to the publication and records refusal
   outbox.registerDefaultHandlers({ executeClaimedJob: async () => {}, executeClaimedAction: async () => {}, workerId: 'test' });
   const handler = outbox.resolveHandler('remediation.ready');
   const { GitHubRemediationClient } = require('../src/services/githubRemediationClient');
-  const publish = jest.fn(async () => ({ state: 'published', results: [] }));
+  const publish = jest.fn(async (payload) => ({ state: 'published', results: [{
+    finding_fingerprint: payload.sections[0].finding_fingerprint,
+    candidate_id: payload.sections[0].candidate_id, mode: 'suggestion',
+  }] }));
   GitHubRemediationClient.mockImplementation(() => ({ publishFindingFixSections: publish }));
   remediationDb.jobPublishContext.mockResolvedValue(context());
   expect(await handler({ aggregate_id: JOB })).toEqual({ status: 'executed', sections: 2 });
@@ -514,7 +529,7 @@ test('the candidate that keeps the suggestion does not depend on the order the c
 // derived, a level missing from the local table ranked 0 and lost to everything by omission.
 test('an executed fix keeps the suggestion over a statically asserted one on the same lines', () => {
   const asserted = provenCandidate(CANDIDATE_A, 'f1', FIXED, { verification_level: 'static_assertion' });
-  const executed = provenCandidate(CANDIDATE_B, 'f5', ALT_FIXED, { verification_level: 'development_unverified' });
+  const executed = provenCandidate(CANDIDATE_B, 'f5', ALT_FIXED, { verification_level: 'isolated_job' });
   const carrying = (sections) => sections.find((section) => section.hunk);
   expect(carrying(inline.buildSections(sameLineContext([asserted, executed])))).toMatchObject({ candidate_id: CANDIDATE_B });
   // And the reverse arrival order gives the same answer.

@@ -107,7 +107,9 @@ const SuggestionRow = ({ marker, text }) => {
 }
 
 export default function PullRequestReviewPreview({ animate = true }) {
-  const [step, setStep] = useState(() => (animate ? 0 : STEP_COUNT))
+  // Keep the diff visible on first paint. An empty code frame looks broken to
+  // users and to link-preview/screenshot crawlers before the animation begins.
+  const [step, setStep] = useState(() => (animate ? 1 : STEP_COUNT))
 
   useEffect(() => {
     if (!animate || prefersReducedMotion()) {
@@ -115,10 +117,10 @@ export default function PullRequestReviewPreview({ animate = true }) {
       return undefined
     }
 
-    setStep(0)
+    setStep(1)
     const timers = []
-    for (let index = 1; index <= STEP_COUNT; index += 1) {
-      timers.push(window.setTimeout(() => setStep(index), index * STEP_DELAY_MS))
+    for (let index = 2; index <= STEP_COUNT; index += 1) {
+      timers.push(window.setTimeout(() => setStep(index), (index - 1) * STEP_DELAY_MS))
     }
 
     return () => {

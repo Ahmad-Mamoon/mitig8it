@@ -161,7 +161,7 @@ async def test_the_evidence_says_nothing_ran_and_which_rule_no_longer_matches(or
     assert "nothing was executed" in limitations
     # And the one thing the ordinary build would have executed is named as not performed: the
     # candidate module was never required, so nothing establishes that it still loads.
-    assert f"runtime load check not performed for {PATH}" in limitations
+    assert f"runtime load check not performed on the service host for {PATH}" in limitations
 
 
 @pytest.mark.asyncio

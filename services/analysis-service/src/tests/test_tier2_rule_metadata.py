@@ -123,8 +123,9 @@ class TestRuleShape:
         )
         if posting == POSTING_QUARANTINE:
             assert str(metadata.get("posting_evidence", "")).strip(), (
-                f"{rule['id']} is quarantined with no evidence; a rule is withheld on a "
-                "measurement, and the measurement is what lets someone re-enable it"
+                f"{rule['id']} is quarantined without a reason; record the measured "
+                "failure or missing qualifying holdout evidence, never imply that "
+                "unvalidated means validated or that a fixture pass permits re-enabling"
             )
 
     @pytest.mark.parametrize("rule", [rule for _, rule in COVERAGE_RULES], ids=IDS)
@@ -150,10 +151,18 @@ class TestPolicyLoading:
     def test_quarantined_set_is_what_the_files_declare(self):
         declared = {
             f"opengrep.{rule['id']}"
-            for _, rule in COVERAGE_RULES
+            for path in sorted(RULES_DIR.glob("*.yml"))
+            for rule in yaml.safe_load(path.read_text(encoding="utf-8"))["rules"]
             if (rule.get("metadata") or {}).get("posting") == POSTING_QUARANTINE
         }
         assert quarantined_rule_ids() == declared
+
+    def test_quarantined_rules_including_base_files_explain_why_they_are_withheld(self):
+        for path in sorted(RULES_DIR.glob("*.yml")):
+            for rule in yaml.safe_load(path.read_text(encoding="utf-8"))["rules"]:
+                metadata = rule.get("metadata") or {}
+                if metadata.get("posting") == POSTING_QUARANTINE:
+                    assert str(metadata.get("posting_evidence", "")).strip(), rule["id"]
 
     def test_every_rule_file_is_loaded_into_the_metadata_index(self):
         index = load_rule_metadata()

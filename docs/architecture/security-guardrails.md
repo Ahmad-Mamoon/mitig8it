@@ -11,7 +11,7 @@ states are:
   not applied, and this document cannot tell you which is true of your project.
 - **Not implemented.** Named here because its absence is worth knowing, not because it is planned.
 
-As of 2026-09-28.
+As of 2026-10-20.
 
 ## 1) Network and Ingress
 - **Enforced.** `api-service` is the only Cloud Run service reachable without a
@@ -45,20 +45,17 @@ As of 2026-09-28.
   transport.
 
 ## 2) Secret Authority
-- **Provisioned, and false for three secrets.** `deploy-api-cloudrun.yml` passes
-  `JWT_SECRET`, `ENCRYPTION_KEY`, `DATABASE_URL`, the GitHub App id and private key,
-  `GITHUB_WEBHOOK_SECRET`, the OAuth client id and secret, and
-  `REMEDIATION_SERVICE_INTERNAL_SECRET` through `--set-secrets`, which are Secret Manager
-  references; `deploy-remediation-cloudrun.yml` does the same for its four. Three secrets
-  do not come from Secret Manager at all. `GITHUB_SERVICE_INTERNAL_SECRET` (the API and
-  GitHub deploys), `ANALYSIS_SERVICE_INTERNAL_SECRET` (the analysis deploy) and
-  `WEBHOOK_SECRET` (the GitHub deploy) are passed with `--update-env-vars` from the
-  `CODESENTRY_INTERNAL_SECRET` and `CODESENTRY_WEBHOOK_SECRET` Actions secrets, so they
-  are stored as plain environment variables on the revision and are readable by anyone who
-  can describe the service. `GITHUB_WEBHOOK_SECRET` and `WEBHOOK_SECRET` are the same
-  GitHub App webhook secret held under two different authorities. No code refuses a secret
-  that arrived as a plain environment variable, so "must" states an intention and not a
-  check.
+- **Enforced by the deployment code; live rollout pending.** Every application credential
+  in the Cloud Run workflows is a Secret Manager reference. The API, GitHub, analysis,
+  and the authenticated dependency smoke all read `codesentry-internal-secret`; both
+  webhook consumers read `codesentry-webhook-secret`; the API runtime reads only
+  `codesentry-database-runtime-url`, while migration and role provisioning read the
+  separate `codesentry-database-url`. GitHub Actions secrets are limited to deployment
+  credentials such as the Firebase token and the optional Google service-account-key
+  fallback. A read-only inspection on 2026-10-20 found that the live project has not yet
+  created the runtime-database or internal-secret entries and its current API revision
+  still uses the old database secret and a plain internal environment value. Therefore
+  this control is present in source but not yet evidenced in production.
 - **Enforced for this repository, and that is all it covers.** The `Secret scan
   (Gitleaks)` job in `.github/workflows/ci.yml` runs on every pull request and push, and
   `.gitignore` excludes every `.env` shape except `.env.example`. Both act on what is
@@ -72,37 +69,33 @@ As of 2026-09-28.
   `ROADMAP.md` both record rotation as a pending owner action. Two properties make the
   absence worse than a missing cron job: `--set-secrets` pins `:latest`, which resolves
   when a revision is created, so even a rotated Secret Manager version does not reach the
-  service until the next deploy; and one value, `CODESENTRY_INTERNAL_SECRET`, is the
+  service until the next deploy; and one value, `codesentry-internal-secret`, is the
   secret for the GitHub boundary, the analysis boundary, the API's `/internal` router and
   both `/metrics` endpoints, so rotating it is a simultaneous change to five places.
 
 ## 3) Internal Service Authentication
-- **Not implemented on the deployed transport.** A deployed API does not send
-  `x-internal-secret` to the GitHub service, and the GitHub service does not check it.
-  `deploy-api-cloudrun.yml` sets `INTERNAL_SERVICE_TRANSPORT=grpc`, which sends
-  `githubServiceRequest` in
-  `services/api-service/src/services/prAnalysisOrchestrator.js` down the gRPC branch (the
-  `isGrpcTransport()` test at line 127); the `x-internal-secret` header is set only in the
-  HTTP fallback below it. On the receiving side
-  `services/github-service/src/index.js` returns after `startGrpcServer()` in that mode,
-  so `ensureInternalAuth` in `services/github-service/src/middleware/internalAuth.js`
-  never runs, and `services/github-service/src/github_grpc_server.js` installs only a
-  correlation-id interceptor and no auth interceptor. The analysis boundary is the same
-  and more so: `services/analysis-service/Dockerfile.prod` runs
-  `analysis_grpc_server.py`, which imports the `*_payload` functions straight out of
-  `main.py` and therefore bypasses the FastAPI `require_internal_auth` dependency
-  entirely, and the server calls `add_insecure_port`. What protects both boundaries in a
-  deployed environment is the Cloud Run IAM check from section 1, reached with the
-  identity token that `createCloudRunCallCredentials` in
-  `services/api-service/src/clients/grpcConnection.js` puts in
-  `x-serverless-authorization`. One layer, not two.
+- **Enforced in both gRPC applications.** The API's `createInternalGrpcMetadata` in
+  `services/api-service/src/clients/grpcConnection.js` sends `x-internal-secret` on every
+  GitHub and analysis RPC and refuses to call without a configured secret. GitHub uses
+  `GITHUB_SERVICE_INTERNAL_SECRET`; analysis prefers `ANALYSIS_SERVICE_INTERNAL_SECRET`
+  and falls back to the shared GitHub secret, matching the HTTP path. The GitHub server
+  wraps every application handler at registration and the analysis server installs
+  `InternalAuthInterceptor` before correlation handling. Both compare credentials in
+  constant time, reject missing, wrong, or duplicate credentials with `UNAUTHENTICATED`,
+  and reject application calls with `UNAVAILABLE` when their secret is unconfigured.
+  The only public probe is the separate `/grpc.health.v1.Health/Check` method; even the
+  application `HealthCheck` methods require the secret. Cloud Run also checks the
+  identity token in `x-serverless-authorization`. TLS terminates at its ingress, while
+  the containers accept plaintext HTTP/2 on their internal ports. Local wire tests cover
+  both application boundaries and API metadata. Deployment and live IAM verification
+  remain operational steps; see the [internal gRPC runbook](../runbooks/internal-grpc-auth.md).
 - **Enforced on the HTTP transport, which is development-grade.** With
   `INTERNAL_SERVICE_TRANSPORT` unset or `http`, the header is sent and
   `ensureInternalAuth` checks it with `crypto.timingSafeEqual`, rejects a mismatch with
   401, and returns 500 when the secret is unconfigured rather than passing the request
   through. `require_internal_auth` in `services/analysis-service/src/main.py` does the
-  same with `hmac.compare_digest` and a 503. Both are correct; neither is on the deployed
-  path.
+  same with `hmac.compare_digest` and a 503. These HTTP middleware functions are separate
+  from the equivalent checks on the deployed gRPC path.
 - **Enforced, and missing from this document until now.** Two `x-internal-secret`
   boundaries do run in a deployed environment. Inbound, the API's `/internal` router
   applies its own `ensureInternalAuth` to every route through `router.use(...)` in
@@ -334,18 +327,19 @@ The largest trust boundary in the system, and the one this document previously d
 The remediation service proves a repair by running a repository's own checks. What isolates that
 execution depends on `SANDBOX_DRIVER`:
 
-- **Not implemented, and the production default.** `SANDBOX_DRIVER=local` runs the repository's
+- **Development-only fallback.** `SANDBOX_DRIVER=local` runs the repository's
   own commands inside the remediation service container: no kernel, network or filesystem
-  isolation, and no broker trust boundary. `local` is the default of the `sandbox_driver` input
-  in `.github/workflows/deploy-remediation-cloudrun.yml`, so an ordinary deploy runs this one.
+  isolation, and no broker trust boundary. A direct component deployment defaults to preserving
+  the current driver; the ordered production workflow explicitly requests `cloud_run_job`.
   Every result it produces is labelled `development_unverified`, which is the honest label and
   not a mitigation. Use it only for repositories the operator owns and has enrolled as test
   repositories.
-- **Provisioned.** `SANDBOX_DRIVER=cloud_run_job` runs each check in a separate Cloud Run job
+- **Provisioned in source; live rollout pending.** `SANDBOX_DRIVER=cloud_run_job` runs each check in a separate Cloud Run job
   container with its own unprivileged user and a denied network, and labels evidence
   `isolated_job`. It requires `infrastructure/remediation/terraform` with
   `enable_cloud_run_job_sandbox=true` and every step of `docs/runbooks/sandbox-cloud-run-job.md`,
-  including the smoke test proving the job's own probes came back denied.
+  including a fresh release smoke proving the job's own probes came back denied and a signed
+  receipt bound to the exact commit, image, identities, buckets, and job generation.
 - Neither driver justifies `SANDBOX_NETWORK_POLICY_ATTESTED` or `SANDBOX_NODE_LIMITS_ATTESTED`.
   `cloud_run_job` still has no read-only root filesystem, no gVisor runtime class and no broker
   trust boundary, so it is a real sandbox and still not the production level.

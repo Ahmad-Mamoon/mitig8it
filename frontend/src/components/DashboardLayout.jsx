@@ -1,5 +1,6 @@
+import { useEffect, useState } from 'react'
 import { Link, Outlet, useLocation } from 'react-router'
-import { Code2, CreditCard, FileText, FolderGit2, LayoutDashboard, LifeBuoy, Moon, Sparkles, Sun, UserCircle } from 'lucide-react'
+import { FileText, FolderGit2, LayoutDashboard, Menu, Moon, Settings, ShieldOff, Sparkles, Sun, UserCircle, X } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { OnboardingProvider, useOnboarding } from '../contexts/OnboardingContext'
 import { useTheme } from '../contexts/ThemeContext'
@@ -12,6 +13,7 @@ const DashboardShell = () => {
   const { theme, toggleTheme } = useTheme()
   const { status } = useOnboarding()
   const location = useLocation()
+  const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false)
   const isFirstRunHome = location.pathname === '/dashboard/home' && (status.needsOnboarding || status.needsFirstReview)
 
   const navigation = [
@@ -19,11 +21,45 @@ const DashboardShell = () => {
     { name: 'Onboarding', href: '/dashboard/onboarding', icon: Sparkles },
     { name: 'Repositories', href: '/dashboard/repositories', icon: FolderGit2 },
     { name: 'Reports', href: '/dashboard/reports', icon: FileText },
-    { name: 'Code Playground', href: '/dashboard/analysis', icon: Code2 },
-    { name: 'Subscription', href: '/dashboard/subscription', icon: CreditCard },
-    { name: 'Support', href: '/dashboard/support', icon: LifeBuoy },
-    { name: 'Profile', href: '/dashboard/profile', icon: UserCircle },
+    { name: 'Suppressions', href: '/dashboard/suppressions', icon: ShieldOff },
+    { name: 'Settings', href: '/dashboard/settings', icon: Settings },
   ]
+
+  useEffect(() => {
+    setMobileNavigationOpen(false)
+  }, [location.pathname])
+
+  useEffect(() => {
+    if (!mobileNavigationOpen) return undefined
+
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') setMobileNavigationOpen(false)
+    }
+
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [mobileNavigationOpen])
+
+  const navigationLinks = (onNavigate) => navigation.map((item) => {
+    const Icon = item.icon
+    const active = location.pathname === item.href
+
+    return (
+      <Link
+        key={item.name}
+        to={item.href}
+        onClick={onNavigate}
+        className={`flex items-center gap-3 rounded-lg px-4 py-2.5 text-sm font-medium transition-colors ${
+          active
+            ? 'bg-neutral-800/80 text-white shadow-sm shadow-black/20'
+            : 'text-neutral-300 hover:bg-neutral-800/40 hover:text-white'
+        }`}
+      >
+        <Icon className="h-4 w-4" aria-hidden="true" />
+        <span>{item.name}</span>
+      </Link>
+    )
+  })
 
   const pageName = isFirstRunHome
     ? 'Getting Started'
@@ -41,23 +77,7 @@ const DashboardShell = () => {
           </a>
 
           <nav className="flex-1 space-y-1 px-4 py-6">
-            {navigation.map((item) => {
-              const Icon = item.icon
-              return (
-                <Link
-                  key={item.name}
-                  to={item.href}
-                  className={`flex items-center gap-3 rounded-lg px-4 py-2.5 text-sm font-medium transition-colors ${
-                    location.pathname === item.href
-                      ? 'bg-neutral-800/80 text-white shadow-sm shadow-black/20'
-                      : 'text-neutral-300 hover:bg-neutral-800/40 hover:text-white'
-                  }`}
-                >
-                  <Icon className="h-4 w-4" />
-                  <span>{item.name}</span>
-                </Link>
-              )
-            })}
+            {navigationLinks()}
           </nav>
 
           <div className="px-4 pb-6">
@@ -88,12 +108,76 @@ const DashboardShell = () => {
           </div>
         </aside>
 
+        {mobileNavigationOpen ? (
+          <div className="fixed inset-0 z-50 lg:hidden">
+            <button
+              type="button"
+              className="absolute inset-0 bg-black/60"
+              aria-label="Close navigation"
+              onClick={() => setMobileNavigationOpen(false)}
+            />
+            <aside
+              id="mobile-dashboard-navigation"
+              className="relative flex h-full w-72 max-w-[85vw] flex-col bg-neutral-950 text-neutral-100 shadow-2xl"
+              aria-label="Dashboard navigation"
+            >
+              <div className="flex items-center justify-between border-b border-neutral-800 px-5 py-5">
+                <a href="/" aria-label="Mitig8it home">
+                  <Logo variant="dark" />
+                </a>
+                <button
+                  type="button"
+                  className="rounded-lg p-2 text-neutral-300 hover:bg-neutral-800 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+                  aria-label="Close navigation"
+                  onClick={() => setMobileNavigationOpen(false)}
+                >
+                  <X className="h-5 w-5" aria-hidden="true" />
+                </button>
+              </div>
+
+              <nav className="flex-1 space-y-1 px-4 py-6">
+                {navigationLinks(() => setMobileNavigationOpen(false))}
+              </nav>
+
+              <div className="space-y-3 border-t border-neutral-800 px-4 py-5">
+                <Button
+                  onClick={toggleTheme}
+                  variant="ghost"
+                  className="w-full justify-start text-neutral-300 hover:text-white"
+                >
+                  {theme === 'light' ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
+                  <span>{theme === 'light' ? 'Dark Mode' : 'Light Mode'}</span>
+                </Button>
+                <button
+                  type="button"
+                  onClick={logout}
+                  className="w-full rounded-lg px-4 py-2.5 text-left text-sm font-medium text-neutral-300 hover:bg-neutral-800 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+                >
+                  Log out
+                </button>
+              </div>
+            </aside>
+          </div>
+        ) : null}
+
         <div className="flex min-h-screen w-full flex-col lg:pl-72">
           <header className="sticky top-0 z-40 border-b border-neutral-200/70 bg-white/80 backdrop-blur dark:border-neutral-800/80 dark:bg-neutral-950/80">
             <div className="flex flex-wrap items-center justify-between gap-4 px-6 py-4 md:px-10">
-              <div>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  className="rounded-lg border border-neutral-200 p-2 text-neutral-700 hover:bg-neutral-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-900 dark:border-neutral-800 dark:text-neutral-200 dark:hover:bg-neutral-800 dark:focus-visible:ring-white lg:hidden"
+                  aria-label="Open navigation"
+                  aria-controls="mobile-dashboard-navigation"
+                  aria-expanded={mobileNavigationOpen}
+                  onClick={() => setMobileNavigationOpen(true)}
+                >
+                  <Menu className="h-5 w-5" aria-hidden="true" />
+                </button>
+                <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.2em] text-neutral-400 dark:text-neutral-500">Mitig8it</p>
                 <h1 className="text-2xl font-semibold text-neutral-900 dark:text-white">{pageName}</h1>
+                </div>
               </div>
               {!isFirstRunHome ? (
                 <div className="rounded-full border border-neutral-200/70 bg-white/80 px-4 py-2 text-xs font-medium capitalize text-neutral-600 dark:border-neutral-800/80 dark:bg-neutral-900/80 dark:text-neutral-300">

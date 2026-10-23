@@ -171,7 +171,12 @@ rules:
         action and a literal `ref:` value in one step, and the combination is the construct
         GitHub's own advisory describes. It is a strict narrowing of
         `cwe-829.gha-untrusted-checkout-privileged-trigger`, which also measured zero.
-      posting: post
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
 
   - id: cwe-829.gha-untrusted-artifact-executed
     # The other half of the `workflow_run` design GitHub recommends. The safe pattern is: an
@@ -229,7 +234,12 @@ rules:
         said here so nobody reads the zero as coverage: a download without `path:`, a direct
         `./path` execution, a `working-directory:` pointing at the download, `make` or
         `docker build` over it, and `gh run download`.
-      posting: post
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
 
   # ── Shell injection through an expression interpolation ────────────────────
 
@@ -326,7 +336,12 @@ rules:
         about what the script does: the claim is only that the job executes bytes nothing
         pinned. Verdicts in benchmarks/vulnerable-corpus/adjudications.json under
         `workflow_supply_chain_2026_10_17`.
-      posting: post
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
 
   # ── An action reference that is not a commit digest ────────────────────────
 

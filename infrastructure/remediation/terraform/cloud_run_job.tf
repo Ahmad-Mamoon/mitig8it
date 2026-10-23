@@ -79,11 +79,23 @@ variable "remediation_service_account_email" {
   }
 }
 
+variable "sandbox_release_service_account_email" {
+  description = "Existing deployment identity used by the release workflow. It may mint a short-lived token for the remediation runtime identity solely to run the live sandbox release check with the runtime's actual permissions."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.sandbox_release_service_account_email == "" || can(regex("^[^@]+@[^@]+\\.iam\\.gserviceaccount\\.com$", var.sandbox_release_service_account_email))
+    error_message = "sandbox_release_service_account_email must be a GCP service-account email."
+  }
+}
+
 resource "google_project_service" "sandbox_job" {
   for_each = var.enable_cloud_run_job_sandbox ? toset([
     "run.googleapis.com",
     "compute.googleapis.com",
     "vpcaccess.googleapis.com",
+    "iamcredentials.googleapis.com",
+    "dns.googleapis.com",
   ]) : toset([])
   service            = each.value
   disable_on_destroy = false
@@ -152,8 +164,12 @@ resource "google_service_account" "sandbox_job" {
     # error that names none of this. Terraform cannot express a cross-variable `validation`
     # below 1.9, so the check lives here, on the first resource the sandbox creates.
     precondition {
-      condition     = var.remediation_service_account_email != ""
-      error_message = "enable_cloud_run_job_sandbox requires remediation_service_account_email: the remediation service's own identity is what uploads snapshots, reads results, and runs the job."
+      condition     = var.remediation_service_account_email != "" && var.remediation_service_account_email != "remediation-sandbox-${var.environment}@${var.project_id}.iam.gserviceaccount.com"
+      error_message = "enable_cloud_run_job_sandbox requires remediation_service_account_email to be an existing runtime identity separate from the sandbox job identity."
+    }
+    precondition {
+      condition     = var.sandbox_release_service_account_email != "" && var.sandbox_release_service_account_email != var.remediation_service_account_email && var.sandbox_release_service_account_email != "remediation-sandbox-${var.environment}@${var.project_id}.iam.gserviceaccount.com"
+      error_message = "enable_cloud_run_job_sandbox requires a separate sandbox_release_service_account_email so release smoke tests can impersonate the remediation runtime identity."
     }
   }
 }
@@ -204,11 +220,11 @@ resource "google_storage_bucket_iam_member" "remediation_reads_results" {
 }
 
 # A custom role rather than a predefined one, because no predefined role is the right size.
-# The driver needs four permissions: read the job, start an execution with container overrides,
-# poll that execution, and cancel it when a verification is abandoned. `roles/run.invoker` plus
-# `roles/run.viewer` covers the first three and not the fourth; the smallest predefined role
-# that adds `run.executions.cancel` is `roles/run.developer`, which would also let the
-# remediation service change this job's image and its service account. The verification level
+# The driver needs five permissions: read the job, start an execution with container overrides,
+# poll that execution, and cancel it when a verification is abandoned. Keep the override
+# permission explicit: run.jobs.run alone cannot start the driver's container overrides.
+# This role must never grant the remediation service permission to change the image or
+# service account. The verification level
 # rests on the image digest being pinned by the deployment, so the one identity that must never
 # be able to change that image is the one asking for the verification.
 resource "google_project_iam_custom_role" "sandbox_job_operator" {
@@ -219,6 +235,7 @@ resource "google_project_iam_custom_role" "sandbox_job_operator" {
   permissions = [
     "run.jobs.get",
     "run.jobs.run",
+    "run.jobs.runWithOverrides",
     "run.executions.get",
     "run.executions.cancel",
   ]
@@ -242,13 +259,32 @@ resource "google_service_account_iam_member" "remediation_acts_as_sandbox_job" {
   member             = "serviceAccount:${var.remediation_service_account_email}"
 }
 
+# The release smoke must exercise the same authority as the running remediation service,
+# rather than accidentally passing with the deployer's broader privileges. Grant only token
+# minting on this one runtime identity; no key creation, signBlob or project-wide token role.
+resource "google_project_iam_custom_role" "sandbox_release_impersonator" {
+  count       = var.enable_cloud_run_job_sandbox ? 1 : 0
+  role_id     = "remediation_sandbox_release_token_${replace(var.environment, "-", "_")}"
+  title       = "Mitig8it sandbox release runtime token (${var.environment})"
+  description = "Mint short-lived runtime credentials for the live sandbox release check. Bind only on the remediation runtime service account."
+  permissions = ["iam.serviceAccounts.getAccessToken"]
+}
+
+resource "google_service_account_iam_member" "sandbox_release_impersonates_runtime" {
+  count              = var.enable_cloud_run_job_sandbox ? 1 : 0
+  service_account_id = "projects/${var.project_id}/serviceAccounts/${var.remediation_service_account_email}"
+  role               = google_project_iam_custom_role.sandbox_release_impersonator[0].name
+  member             = "serviceAccount:${var.sandbox_release_service_account_email}"
+}
+
 # --------------------------------------------------------------------------------------
 # Network
 # --------------------------------------------------------------------------------------
 
-# A network of its own, with no peering, no Cloud NAT, and no route to the internet. Private
-# Google Access is the one thing reachable from it, which is what lets the task download its
-# snapshot and upload its result without any other egress existing.
+# A network of its own, with no peering or Cloud NAT. Retain the default gateway route for
+# Private Google Access, resolve Google APIs to its private VIP, and restrict VPC egress to
+# that VIP. The trusted task needs it to download snapshots and upload results; check children
+# use private network namespaces, which also deny link-local metadata outside the VPC firewall.
 #
 # This is the network *configuration*. It is not the thing the verification level relies on:
 # the task measures what its check can actually reach and the driver refuses evidence whose
@@ -271,6 +307,39 @@ resource "google_compute_subnetwork" "sandbox" {
   private_ip_google_access = true
 }
 
+# Private Google Access does not rewrite public googleapis DNS answers by itself. Without
+# this private zone the API client resolves normal public addresses, which the deny rule
+# correctly blocks, and no task can download its snapshot or publish signed evidence.
+# https://cloud.google.com/vpc/docs/configure-private-google-access
+resource "google_dns_managed_zone" "sandbox_googleapis" {
+  count      = var.enable_cloud_run_job_sandbox ? 1 : 0
+  name       = "remediation-sandbox-googleapis-${var.environment}"
+  dns_name   = "googleapis.com."
+  visibility = "private"
+
+  private_visibility_config {
+    networks { network_url = google_compute_network.sandbox[0].id }
+  }
+}
+
+resource "google_dns_record_set" "sandbox_googleapis_vip" {
+  count        = var.enable_cloud_run_job_sandbox ? 1 : 0
+  managed_zone = google_dns_managed_zone.sandbox_googleapis[0].name
+  name         = "private.googleapis.com."
+  type         = "A"
+  ttl          = 300
+  rrdatas      = ["199.36.153.8", "199.36.153.9", "199.36.153.10", "199.36.153.11"]
+}
+
+resource "google_dns_record_set" "sandbox_googleapis_alias" {
+  count        = var.enable_cloud_run_job_sandbox ? 1 : 0
+  managed_zone = google_dns_managed_zone.sandbox_googleapis[0].name
+  name         = "*.googleapis.com."
+  type         = "CNAME"
+  ttl          = 300
+  rrdatas      = [google_dns_record_set.sandbox_googleapis_vip[0].name]
+}
+
 # Deny every egress the default allow-all rule would otherwise permit, except to the two
 # Private Google Access ranges. Without this the absence of Cloud NAT is the only thing
 # stopping internet egress, and the absence of a component is not a control.
@@ -281,7 +350,7 @@ resource "google_compute_firewall" "sandbox_allow_google_apis" {
   direction = "EGRESS"
   priority  = 1000
 
-  destination_ranges = ["199.36.153.8/30", "199.36.153.4/30", "34.126.0.0/18"]
+  destination_ranges = ["199.36.153.8/30"]
 
   allow {
     protocol = "tcp"
@@ -320,13 +389,14 @@ resource "google_cloud_run_v2_job" "sandbox" {
   depends_on          = [google_project_service.sandbox_job]
 
   template {
-    task_count  = 1
-    parallelism = 0
+    task_count  = 2
+    parallelism = 2
 
     template {
-      service_account = google_service_account.sandbox_job[0].email
-      max_retries     = 0
-      timeout         = "600s"
+      service_account       = google_service_account.sandbox_job[0].email
+      max_retries           = 0
+      timeout               = "600s"
+      execution_environment = "EXECUTION_ENVIRONMENT_GEN2"
 
       vpc_access {
         network_interfaces {
@@ -388,6 +458,17 @@ output "sandbox_job_operator_role" {
 }
 
 output "sandbox_network" {
-  description = "The isolated VPC the job egresses through. No Cloud NAT, no internet route, Private Google Access on."
+  description = "The isolated VPC the job egresses through. No Cloud NAT; VPC egress is restricted to the Private Google Access VIP."
   value       = one(google_compute_network.sandbox[*].name)
+}
+
+output "sandbox_github_environment_variables" {
+  description = "Set these GitHub environment variables separately for production and staging. Each environment must have its own job, buckets and identities. The release workflow performs live smoke verification; these values alone do not enable a driver."
+  value = var.enable_cloud_run_job_sandbox ? {
+    SANDBOX_JOB_NAME                  = google_cloud_run_v2_job.sandbox[0].name
+    SANDBOX_BUCKET                    = google_storage_bucket.sandbox_snapshots[0].name
+    SANDBOX_RESULTS_BUCKET            = google_storage_bucket.sandbox_results[0].name
+    SANDBOX_JOB_SERVICE_ACCOUNT       = google_service_account.sandbox_job[0].email
+    REMEDIATION_SERVICE_ACCOUNT_EMAIL = var.remediation_service_account_email
+  } : null
 }

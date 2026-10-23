@@ -8,14 +8,15 @@
 # test repositories. It is not a production verification path, and nothing it reports may
 # justify setting SANDBOX_NETWORK_POLICY_ATTESTED or SANDBOX_NODE_LIMITS_ATTESTED.
 #
-# `local` is the default of the sandbox_driver input below, so an ordinary push to main never
-# changes which sandbox is in use. Selecting `cloud_run_job` runs each check in a separate
+# `preserve` is the default of the sandbox_driver input below, so a direct manual component
+# deployment retains the deployed driver. The ordered production release selects
+# `cloud_run_job`, which runs each check in a separate
 # Cloud Run job container with its own unprivileged user and a denied network, and evidence is
 # then labelled `isolated_job`. That is a real sandbox and still not the production level: it
 # has no read-only root filesystem and no gVisor runtime class, and this deployment still has
-# no broker trust boundary. Do not select it before completing every step of
-# docs/runbooks/sandbox-cloud-run-job.md, including the smoke test that proves the job's own
-# probes came back denied. Neither driver justifies either attestation flag.
+# no broker trust boundary. Every release that retains or selects it must pass a fresh live
+# smoke against its exact digest using the remediation runtime identity, then revalidate that
+# receipt immediately before deployment. Neither driver justifies either attestation flag.
 #
 # Configuration this deployment sets (see docs/runbooks/remediation.md). No secret value is
 # embedded here; every credential is a Secret Manager reference resolved by Cloud Run.
@@ -28,7 +29,9 @@
 #     GCP_SERVICE_ACCOUNT_EMAIL          service account impersonated by workload identity
 #     SANDBOX_JOB_NAME                   Cloud Run job created by infrastructure/remediation/terraform
 #     SANDBOX_BUCKET                     snapshots bucket (<prefix>-snapshots)
-#     SANDBOX_RESULTS_BUCKET             results bucket (<prefix>-results); optional, derived when unset
+#     SANDBOX_RESULTS_BUCKET             results bucket (<prefix>-results)
+#     SANDBOX_JOB_SERVICE_ACCOUNT        dedicated job identity from Terraform
+#     REMEDIATION_SERVICE_ACCOUNT_EMAIL  runtime identity from Terraform; also impersonated for smoke
 #
 #   Plain environment variables set on the service
 #     REMEDIATION_EXECUTION_BACKEND=local      development-only SQLite/file execution store
@@ -36,7 +39,7 @@
 #     REMEDIATION_WORKER_INPROCESS=true        the durable worker loop runs in this process
 #     REMEDIATION_WORKER_POLL_SECONDS=2        worker idle poll interval
 #     SANDBOX_BROKER_MODE=inprocess            no separate broker deployment
-#     SANDBOX_DRIVER                           local (default) or cloud_run_job, from the input
+#     SANDBOX_DRIVER                           local or cloud_run_job; preserved unless explicitly selected
 #     SANDBOX_LOCAL_WORKSPACE_ROOT=/tmp/sandbox     scratch root for local check workspaces
 #     SANDBOX_NETWORK_POLICY_ATTESTED=false    must stay false for this deployment
 #     SANDBOX_NODE_LIMITS_ATTESTED=false       must stay false for this deployment
@@ -67,18 +70,13 @@
 name: Deploy Remediation (Cloud Run)
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'services/remediation-service/**'
-      - '.github/workflows/deploy-remediation-cloudrun.yml'
   workflow_dispatch:
     inputs:
       sandbox_driver:
-        description: 'Which sandbox runs repository checks. cloud_run_job requires docs/runbooks/sandbox-cloud-run-job.md to have been completed, smoke test included.'
+        description: 'Preserve the deployed driver, or select one explicitly. Every cloud_run_job release requires a fresh live isolation smoke.'
         type: choice
-        options: [local, cloud_run_job]
-        default: local
+        options: [preserve, local, cloud_run_job]
+        default: preserve
         required: false
       environment:
         description: 'Which environment to deploy'
@@ -87,33 +85,52 @@ on:
         default: production
   workflow_call:
     inputs:
+      sandbox_driver:
+        type: string
+        default: preserve
       environment:
         type: string
         default: production
+      ref:
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  # Staging and production are separate services and must not queue behind each other.
-  group: cloudrun-deploy-${{ github.workflow }}-${{ inputs.environment || 'production' }}
+  # Serialize image updates and release checks even if two environments were accidentally
+  # configured with the same sandbox job. Each environment must still use separate resources.
+  group: cloudrun-remediation-deploy
   cancel-in-progress: false
 
 jobs:
   deploy:
+    if: >-
+      inputs.ref != ''
+      || (inputs.environment == 'production' && github.ref == 'refs/heads/main')
+      || (inputs.environment == 'staging' && github.ref == 'refs/heads/staging')
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    environment: ${{ inputs.environment || 'production' }}
     permissions:
       contents: read
       id-token: write
     env:
-      # A push to main is never a request to change the sandbox, so it takes the default.
-      SANDBOX_DRIVER: ${{ inputs.sandbox_driver || 'local' }}
+      SANDBOX_DRIVER_REQUEST: ${{ inputs.sandbox_driver || 'preserve' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
 
       # Everything downstream reads $SERVICE and $SECRET_SUFFIX, so the difference
       # between production and staging lives in exactly one step.
+      - name: Enforce quality evidence before shipping
+        uses: ./.github/actions/quality-readiness
+        with:
+          environment: ${{ inputs.environment || 'production' }}
+          component: remediation
+
       - name: Resolve environment
         shell: bash
         run: |
@@ -147,6 +164,22 @@ jobs:
         with:
           project_id: '${{ vars.GCP_PROJECT_ID }}'
 
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.12'
+
+      - name: Install the sandbox release verifier
+        run: python -m pip install -r services/remediation-service/requirements.txt
+
+      - name: Resolve the requested or currently deployed driver
+        shell: bash
+        run: |
+          set -euo pipefail
+          DRIVER=$(python services/remediation-service/scripts/cloud_run_sandbox_release.py resolve-driver \
+            --requested "$SANDBOX_DRIVER_REQUEST" --service "$SERVICE" \
+            --region '${{ vars.GCP_REGION }}' --project '${{ vars.GCP_PROJECT_ID }}')
+          echo "SANDBOX_DRIVER=$DRIVER" >> "$GITHUB_ENV"
+
       # Refuse early rather than deploying a service configured for a sandbox this installation
       # has not provisioned. The driver would fail closed at construction, but it would do so
       # after the deploy replaced a working revision.
@@ -158,6 +191,9 @@ jobs:
           missing=()
           [ -n "${{ vars.SANDBOX_JOB_NAME }}" ] || missing+=("vars.SANDBOX_JOB_NAME")
           [ -n "${{ vars.SANDBOX_BUCKET }}" ] || missing+=("vars.SANDBOX_BUCKET")
+          [ -n "${{ vars.SANDBOX_RESULTS_BUCKET }}" ] || missing+=("vars.SANDBOX_RESULTS_BUCKET")
+          [ -n "${{ vars.SANDBOX_JOB_SERVICE_ACCOUNT }}" ] || missing+=("vars.SANDBOX_JOB_SERVICE_ACCOUNT")
+          [ -n "${{ vars.REMEDIATION_SERVICE_ACCOUNT_EMAIL }}" ] || missing+=("vars.REMEDIATION_SERVICE_ACCOUNT_EMAIL")
           if [ "${#missing[@]}" -ne 0 ]; then
             echo "SANDBOX_DRIVER=cloud_run_job needs ${missing[*]}. Run infrastructure/remediation/terraform with enable_cloud_run_job_sandbox=true and follow docs/runbooks/sandbox-cloud-run-job.md." >&2
             exit 1
@@ -178,10 +214,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          SHORT="${GITHUB_SHA:0:12}"
+          DEPLOY_SHA=$(git rev-parse HEAD)
+          SHORT="${DEPLOY_SHA:0:12}"
           REGISTRY="us-central1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}"
-          echo "IMAGE=${REGISTRY}/remediation:remediation-${SHORT}" >> "$GITHUB_ENV"
-          echo "JOB_IMAGE=${REGISTRY}/remediation-job:remediation-job-${SHORT}" >> "$GITHUB_ENV"
+          {
+            echo "DEPLOY_SHA=${DEPLOY_SHA}"
+            echo "IMAGE=${REGISTRY}/remediation:remediation-${SHORT}"
+            echo "JOB_IMAGE=${REGISTRY}/remediation-job:remediation-job-${SHORT}"
+          } >> "$GITHUB_ENV"
 
       - name: Build repair image
         run: |
@@ -219,6 +259,7 @@ jobs:
       # and the same disagreement is what docs/runbooks/rollback.md section 3 says to
       # repair by hand after a rollback.
       - name: Point the sandbox job at the new digest
+        id: sandbox-image
         if: env.SANDBOX_DRIVER == 'cloud_run_job'
         shell: bash
         run: |
@@ -226,10 +267,41 @@ jobs:
           DIGEST=$(gcloud artifacts docker images describe "$JOB_IMAGE" \
             --project '${{ vars.GCP_PROJECT_ID }}' --format='value(image_summary.digest)')
           PINNED="${JOB_IMAGE%:*}@${DIGEST}"
+          python services/remediation-service/scripts/cloud_run_sandbox_release.py check-image "$PINNED"
+          PREVIOUS=$(python services/remediation-service/scripts/cloud_run_sandbox_release.py job-image \
+            --job '${{ vars.SANDBOX_JOB_NAME }}' \
+            --region '${{ vars.GCP_REGION }}' --project '${{ vars.GCP_PROJECT_ID }}')
+          echo "PREVIOUS_SANDBOX_IMAGE=$PREVIOUS" >> "$GITHUB_ENV"
           gcloud run jobs update '${{ vars.SANDBOX_JOB_NAME }}' \
             --image "$PINNED" \
             --region '${{ vars.GCP_REGION }}' --project '${{ vars.GCP_PROJECT_ID }}'
           echo "SANDBOX_IMAGE_DIGEST=${PINNED}" >> "$GITHUB_ENV"
+
+      - name: Verify live sandbox isolation before selecting the driver
+        id: sandbox-smoke
+        if: env.SANDBOX_DRIVER == 'cloud_run_job'
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          python services/remediation-service/scripts/cloud_run_sandbox_release.py smoke \
+            --job '${{ vars.SANDBOX_JOB_NAME }}' \
+            --region '${{ vars.GCP_REGION }}' --project '${{ vars.GCP_PROJECT_ID }}' \
+            --image "$SANDBOX_IMAGE_DIGEST" --release-sha "$DEPLOY_SHA" \
+            --snapshot-bucket '${{ vars.SANDBOX_BUCKET }}' \
+            --result-bucket '${{ vars.SANDBOX_RESULTS_BUCKET }}' \
+            --runtime-service-account '${{ vars.REMEDIATION_SERVICE_ACCOUNT_EMAIL }}' \
+            --job-service-account '${{ vars.SANDBOX_JOB_SERVICE_ACCOUNT }}' \
+            --receipt "$RUNNER_TEMP/sandbox-release-receipt.json"
+
+      - name: Retain sandbox release evidence
+        if: always() && steps.sandbox-smoke.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: sandbox-release-${{ env.DEPLOY_SHA }}-${{ inputs.environment || 'production' }}
+          path: ${{ runner.temp }}/sandbox-release-receipt.json
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Compose the service environment
         shell: bash
@@ -252,9 +324,7 @@ jobs:
             VARS="${VARS},SANDBOX_JOB_PROJECT=${{ vars.GCP_PROJECT_ID }}"
             VARS="${VARS},SANDBOX_BUCKET=${{ vars.SANDBOX_BUCKET }}"
             VARS="${VARS},SANDBOX_IMAGE_DIGEST=${SANDBOX_IMAGE_DIGEST}"
-            if [ -n "${{ vars.SANDBOX_RESULTS_BUCKET }}" ]; then
-              VARS="${VARS},SANDBOX_RESULTS_BUCKET=${{ vars.SANDBOX_RESULTS_BUCKET }}"
-            fi
+            VARS="${VARS},SANDBOX_RESULTS_BUCKET=${{ vars.SANDBOX_RESULTS_BUCKET }}"
           fi
           echo "SERVICE_ENV_VARS=${VARS}" >> "$GITHUB_ENV"
 
@@ -302,22 +372,34 @@ jobs:
       # SQLite file. With SANDBOX_DRIVER=local the sandbox also runs checks on this container's
       # CPU; with cloud_run_job the checks run elsewhere and this container only waits on them.
       - name: Deploy repair service
+        id: deploy-service
         shell: bash
         run: |
           set -euo pipefail
-          # The revision is created without traffic and reachable only through the
-          # `candidate` tag, so the checks below run against the new code before anybody
-          # is served by it. This is not about a revision that cannot start: gcloud
-          # already waits for Ready and fails the deploy without moving traffic. It is
-          # about the application-level checks, which until now ran after the fact. The
-          # tag is the literal string `candidate` in every service, so it never
-          # accumulates: each deploy replaces it and the promote removes it.
           STAGE=()
+          IDENTITY_FLAGS=()
+          if [ "$SANDBOX_DRIVER" = "cloud_run_job" ]; then
+            # This reads the current job and immutable execution again, rejects stale receipts,
+            # and binds the proof to this commit, image, buckets and runtime identity.
+            python services/remediation-service/scripts/cloud_run_sandbox_release.py verify \
+              --job '${{ vars.SANDBOX_JOB_NAME }}' \
+              --region '${{ vars.GCP_REGION }}' --project '${{ vars.GCP_PROJECT_ID }}' \
+              --image "$SANDBOX_IMAGE_DIGEST" --release-sha "$DEPLOY_SHA" \
+              --snapshot-bucket '${{ vars.SANDBOX_BUCKET }}' \
+              --result-bucket '${{ vars.SANDBOX_RESULTS_BUCKET }}' \
+              --runtime-service-account '${{ vars.REMEDIATION_SERVICE_ACCOUNT_EMAIL }}' \
+              --job-service-account '${{ vars.SANDBOX_JOB_SERVICE_ACCOUNT }}' \
+              --receipt "$RUNNER_TEMP/sandbox-release-receipt.json"
+            IDENTITY_FLAGS=(--service-account '${{ vars.REMEDIATION_SERVICE_ACCOUNT_EMAIL }}')
+          fi
+          # Existing services get an addressable candidate revision with no traffic;
+          # first deployments have no prior revision and therefore cannot be staged.
           if [ "$FIRST_DEPLOY" != "true" ]; then
             STAGE+=(--no-traffic --tag candidate)
           fi
           gcloud run deploy "$SERVICE" \
             --image "$IMAGE" \
+            "${IDENTITY_FLAGS[@]}" \
             --region '${{ vars.GCP_REGION }}' \
             --no-cpu-throttling \
             --project '${{ vars.GCP_PROJECT_ID }}' \
@@ -337,6 +419,15 @@ jobs:
             --port 8002 \
             --no-allow-unauthenticated \
             "${STAGE[@]}"
+
+      - name: Restore the previous sandbox image if the service release was refused
+        if: failure() && steps.sandbox-image.outcome == 'success' && steps.deploy-service.outcome != 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run jobs update '${{ vars.SANDBOX_JOB_NAME }}' \
+            --image "$PREVIOUS_SANDBOX_IMAGE" \
+            --region '${{ vars.GCP_REGION }}' --project '${{ vars.GCP_PROJECT_ID }}'
 
       # Everything below this point reads the candidate, never the service URL, because
       # the service still answers from the old revision until the promote. On a first
@@ -409,6 +500,7 @@ jobs:
       # revision, which is the state section 3 of docs/runbooks/rollback.md warns leaves
       # deploys looking green while serving old code.
       - name: Promote the candidate
+        id: promote
         if: env.FIRST_DEPLOY != 'true'
         shell: bash
         run: |
@@ -435,13 +527,32 @@ jobs:
           echo "If this deploy selected SANDBOX_DRIVER=cloud_run_job, the sandbox job is now pointed at a digest the serving revision does not expect: docs/runbooks/rollback.md section 3." >&2
           exit 1
 
+      - name: Restore the previous sandbox image when the candidate was rejected
+        if: >-
+          failure()
+          && env.SANDBOX_DRIVER == 'cloud_run_job'
+          && steps.sandbox-image.outcome == 'success'
+          && steps.deploy-service.outcome == 'success'
+          && steps.promote.outcome != 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run jobs update '${{ vars.SANDBOX_JOB_NAME }}' \
+            --image "$PREVIOUS_SANDBOX_IMAGE" \
+            --region '${{ vars.GCP_REGION }}' --project '${{ vars.GCP_PROJECT_ID }}'
+
       - name: State which sandbox this revision uses
         shell: bash
         run: |
           if [ "${SANDBOX_DRIVER}" = "cloud_run_job" ]; then
-            echo "SANDBOX_DRIVER=cloud_run_job. Checks run in ${{ vars.SANDBOX_JOB_NAME }} at ${SANDBOX_IMAGE_DIGEST}." >> "$GITHUB_STEP_SUMMARY"
-            echo "Evidence is labelled isolated_job: a real sandbox, with no read-only root filesystem and no gVisor runtime class." >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo "SANDBOX_DRIVER=cloud_run_job. Checks run in ${{ vars.SANDBOX_JOB_NAME }} at ${SANDBOX_IMAGE_DIGEST}."
+              echo "Fresh signed baseline/candidate results and the immutable execution passed the release isolation smoke. Receipt retained as a workflow artifact."
+              echo "Evidence is labelled isolated_job, with no read-only root filesystem and no gVisor runtime class."
+            } >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "SANDBOX_DRIVER=local. Repository checks run inside this service container with no isolation." >> "$GITHUB_STEP_SUMMARY"
-            echo "Every result is labelled development_unverified and satisfies no isolation gate." >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo "SANDBOX_DRIVER=local. Repository checks run inside this service container with no isolation."
+              echo "Every result is labelled development_unverified and satisfies no isolation gate."
+            } >> "$GITHUB_STEP_SUMMARY"
           fi

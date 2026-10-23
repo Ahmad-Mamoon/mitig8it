@@ -5,8 +5,8 @@
 const pipeline = [
   { node: 'Detect', label: 'Rules, AST scan, model triage' },
   { node: 'Generate', label: 'Template first, model when needed' },
-  { node: 'Prove', label: 'Regression test in a sandbox, or a static assertion' },
-  { node: 'Publish', label: 'Suggestion block under the finding' },
+  { node: 'Prove', label: 'Run the configured evidence check; refuse on uncertainty' },
+  { node: 'Publish', label: 'Post only evidence that meets policy' },
   { node: 'You apply', label: 'Commit it, merge stays yours' },
 ]
 
@@ -39,7 +39,7 @@ export default function FixPipeline({ className = '' }) {
           </span>
           <div className="min-w-0 sm:mt-4">
             <p className="text-sm font-semibold text-white">{item.node}</p>
-            <p className="mt-1 text-sm leading-6 text-neutral-500">{item.label}</p>
+            <p className="mt-1 text-sm leading-6 text-neutral-400">{item.label}</p>
           </div>
         </li>
       ))}

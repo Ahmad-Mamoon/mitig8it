@@ -947,12 +947,11 @@ def _load_module(root: Path, path: str) -> dict[str, Any]:
     return {"state": "error", "name": str(report.get("name", "Error")), "message": message}
 
 
-# What a bundle records instead of a load check when the caller asked for no execution. It is a
-# limitation rather than a silence: a reviewer reading a statically asserted candidate is told
-# that nobody has established the patched module still loads.
+# What a bundle records when host module loading is disabled. The configured verifier may
+# later execute the exact candidate; construction itself establishes only static properties.
 NO_LOAD_CHECK_LIMITATION = (
-    "runtime load check not performed for {path}: nothing was executed, so it is not established "
-    "that the patched module still loads"
+    "runtime load check not performed on the service host for {path}: module execution is "
+    "deferred to the configured verifier; static checks do not establish runtime behavior"
 )
 
 
@@ -1247,16 +1246,13 @@ def build_patch_bundle(
     proposed_changes: list[dict[str, Any]],
     regression_tests: list[dict[str, Any]] | None = None,
     *,
-    load_checks: bool = True,
+    load_checks: bool = False,
 ) -> PatchBundle:
     """Builds a bundle from the agent's line-range hunks against the exact snapshot.
 
-    `load_checks=False` builds the bundle without requiring the patched module. Only the static
-    assertion path passes it, and it passes it because the level's fifth clause is that nothing
-    was executed: the load check requires the candidate module, which runs whatever that module
-    runs on import, so a bundle built with it is not a bundle nothing ran over. The check is
-    recorded as not performed rather than dropped, and `_reject_undefined_names` below still
-    catches the failure a load check most often finds, a hunk using a name no hunk imported.
+    Every service path passes `load_checks=False`: requiring a patched module is untrusted
+    execution and belongs to the configured verifier sandbox. The host loader is retained
+    for explicit development diagnostics; syntax and undefined-name checks still run here.
     """
     if not proposed_changes:
         raise PatchPolicyError("proposal_contains_no_changes", "Send at least one change hunk.")
@@ -1281,7 +1277,7 @@ def _build_bundle_from_contents(
     regression_tests: list[dict[str, Any]] | None = None,
     hunks: tuple[LocatedHunk, ...] = (),
     *,
-    load_checks: bool = True,
+    load_checks: bool = False,
 ) -> PatchBundle:
     if not replacements:
         raise PatchPolicyError("proposal_contains_no_changes")
@@ -1416,7 +1412,7 @@ def _ranges_conflict(first: tuple[int, int, list[str]], second: tuple[int, int, 
 
 
 def combine_patch_bundles(
-    request: RepairRequest, snapshot: Snapshot, bundles: list[PatchBundle], *, load_checks: bool = True
+    request: RepairRequest, snapshot: Snapshot, bundles: list[PatchBundle], *, load_checks: bool = False
 ) -> PatchBundle:
     """Unions candidate patches into one tree, rejecting candidates that edit the same range.
 
@@ -1424,9 +1420,8 @@ def combine_patch_bundles(
     Two candidates whose ranges intersect on one file cannot be combined mechanically, so the
     batch is rejected as `overlapping_candidates` instead of silently preferring one candidate.
 
-    `load_checks=False` carries the static assertion's fifth clause into the combine: a batch of
-    statically asserted candidates must not require the union either, or the batch would have
-    executed something none of its candidates did.
+    Host module loading defaults off for every batch. Any runtime execution of the union
+    belongs to the configured verifier, and an all-static batch must not execute at all.
     """
     if not bundles:
         raise PatchPolicyError("batch_contains_no_candidates")

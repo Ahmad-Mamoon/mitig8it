@@ -109,6 +109,12 @@ rules:
       category: "weak password hashing"
       family: "password_hashing"
       confidence: "0.88"
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
 
   # ── SSRF ───────────────────────────────────────────────────────────────
 

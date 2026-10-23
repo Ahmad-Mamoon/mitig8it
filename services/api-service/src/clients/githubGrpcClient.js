@@ -2,9 +2,8 @@ const grpc = require('@grpc/grpc-js');
 const githubPb = require('../grpc/generated/github_pb');
 const githubGrpc = require('../grpc/generated/github_grpc_pb');
 const commonPb = require('../grpc/generated/common_pb');
-const { createGrpcClientConfig } = require('./grpcConnection');
+const { createGrpcClientConfig, createInternalGrpcMetadata } = require('./grpcConnection');
 const { changedFileToPlain } = require('./grpcConverters');
-const requestContext = require('../utils/requestContext');
 
 // The GitHub service reports the originating internal HTTP status in this trailing
 // metadata entry, because gRPC collapses the 409 and 422 that callers branch on into
@@ -50,7 +49,7 @@ function unary(client, method, request, timeoutMs = 45000) {
     const deadline = new Date(Date.now() + timeoutMs);
     // The delivery and run identifiers ride along on every call, so the github
     // service's log lines for this work join the API's without a manual argument.
-    const metadata = requestContext.toGrpcMetadata(grpc.Metadata);
+    const metadata = createInternalGrpcMetadata(process.env.GITHUB_SERVICE_INTERNAL_SECRET);
     client[method](request, metadata, { deadline }, (error, response) => {
       if (error) {
         reject(error);
@@ -326,6 +325,23 @@ class GitHubGrpcClient {
     request.setSummary(payload.summary || '');
     const response = await unary(this.client, 'createCheckRun', request);
     return { check_run_id: response.getCheckRunId() };
+  }
+
+  // Unlike the standard gRPC health probe used by Cloud Run, this RPC is part
+  // of the authenticated application service and therefore exercises both IAM
+  // call credentials and x-internal-secret end to end.
+  async healthCheck(_payload = {}, timeoutMs = 10000) {
+    const response = await unary(
+      this.client,
+      'healthCheck',
+      new commonPb.HealthCheckRequest(),
+      timeoutMs
+    );
+    return {
+      status: response.getStatus(),
+      service: response.getService(),
+      version: response.getVersion(),
+    };
   }
 }
 

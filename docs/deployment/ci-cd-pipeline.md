@@ -7,29 +7,30 @@ How code goes from a push to running in production. This is the high-level overv
 The pipeline has two stages:
 
 1. **CI** (`.github/workflows/ci.yml`): the gate. Tests and security scans run on every PR and every push to `main`. Nothing is deployed here.
-2. **Deploy**: five workflows, each deploying a single component and only if that component changed. Four of them start after CI succeeds on `main`; the remediation one is push-triggered.
+2. **Deploy**: one ordered production orchestrator, one ordered staging orchestrator,
+   and reusable/manual component workflows. Production is manual and requires successful
+   CI for the exact commit. Staging starts only after successful CI on a `staging` push.
 
 ```mermaid
 flowchart TD
   Trigger[PR or push to main] --> CI[ci.yml: security scans, dependency audits, tests, docker build]
-  CI -->|all jobs pass on main| Deploy{workflow_run: CI completed}
+  CI -->|success for exact commit| Deploy[manual deploy-production.yml]
   CI -->|any job fails| Stop[Stop, nothing deploys]
 
-  Deploy --> API[deploy-api-cloudrun.yml]
-  Deploy --> GH[deploy-github-cloudrun.yml]
-  Deploy --> Analysis[deploy-analysis-cloudrun.yml]
-  Deploy --> FE[deploy-frontend-firebase.yml]
+  Deploy --> API[API plus migration/runtime-role verification]
+  API --> GH[GitHub gRPC]
+  API --> Analysis[Analysis gRPC]
+  API --> Rem[Remediation plus isolated-sandbox release proof]
+  GH --> InternalSmoke[authenticated dependency smoke]
+  Analysis --> InternalSmoke
+  InternalSmoke --> FE[Firebase frontend]
+  Rem --> FE
 
-  API -->|filter, build, push, smoke| RunAPI[Cloud Run codesentry-api]
-  GH -->|filter, build, push, smoke| RunGH[Cloud Run codesentry-github]
-  Analysis -->|filter, build, push, smoke| RunAn[Cloud Run codesentry-analysis]
-  FE -->|filter, npm build, smoke| Firebase[Firebase Hosting]
-
-  Trigger -->|push under services/remediation-service| Rem[deploy-remediation-cloudrun.yml]
-  Rem -->|build, push, smoke| RunRem[Cloud Run codesentry-remediation]
+  FE --> Firebase[Firebase Hosting]
 ```
 
-Each deploy workflow first runs a `filter` job that skips the deploy if its component did not change. Cloud Run deploys use per-workflow concurrency, so repeat deploys for the same component are serialized.
+The ordered release deploys every component from the same immutable commit. Cloud Run
+deploys use per-environment concurrency, so repeat deploys are serialized.
 
 ## Stage 1: CI (the gate)
 
@@ -58,13 +59,19 @@ CI does not push images or deploy anything. It only proves the code is safe and 
 
 ## Stage 2: Deploy
 
-When CI finishes successfully on `main`, the four deploy workflows start (via `workflow_run`). Each can also be run manually with `workflow_dispatch`.
+An operator starts `deploy-production.yml`; it verifies a successful CI run exists for
+the exact workflow commit. `deploy-staging.yml` is triggered by successful CI for a
+same-repository push to `staging`. Backends build and push an image to Artifact Registry,
+then deploy to Cloud Run; the frontend builds and deploys to Firebase Hosting. Each leaf
+also enforces the packaged quality-readiness evidence.
 
-Every deploy workflow has two jobs:
-
-- **`filter`**: checks whether this component's files changed in the latest commit. If not, the deploy is skipped.
-- **`deploy`**: runs only if `filter` says yes. Backends build and push a Docker image to Artifact Registry, then deploy to Cloud Run; the frontend builds with npm and deploys to Firebase Hosting.
-- **Staging and promotion**: the four Cloud Run deploys create the revision with `--no-traffic --tag candidate`, check it on its own tag URL, and only then run `gcloud run services update-traffic --to-latest --remove-tags candidate`. A failed check leaves traffic on the previous revision and promotes nothing; a failed promote returns traffic to the revision recorded before the deploy started. The first deploy of a service, which is what `deploy-staging.yml` does, skips staging because a service with no other revision would otherwise serve nothing. The frontend has no revision to stage and is live as soon as it deploys. [../runbooks/rollback.md](../runbooks/rollback.md) is what to do when a bad revision did get promoted.
+The Cloud Run workflows stage an existing service revision with
+`--no-traffic --tag candidate`, exercise the candidate URL, and only then promote it.
+A failed check leaves traffic on the previous revision; a failed promotion restores that
+revision. First deployments cannot be staged because no serving revision exists. The
+frontend has no equivalent traffic split and becomes live immediately after deployment.
+[The rollback runbook](../runbooks/rollback.md) covers recovery when a bad revision was
+promoted despite these checks.
 
 | Component | Target | Workflow |
 |---|---|---|
@@ -74,14 +81,18 @@ Every deploy workflow has two jobs:
 | Analysis service | Cloud Run `codesentry-analysis` | `deploy-analysis-cloudrun.yml` |
 | Remediation service | Cloud Run `codesentry-remediation` | `deploy-remediation-cloudrun.yml` |
 
-The remediation workflow is the exception to the `workflow_run` pattern: it triggers directly on a push to `main` under `services/remediation-service/**`, so it does not wait for the CI aggregate. It deploys the single-instance development configuration.
-
 ## Key design choices
 
-- **CI gates deploy.** The four original deploy workflows only start after CI passes on `main` (`workflow_run`). The remediation deploy is push-triggered and is not gated this way.
-- **Path filtering.** Only the component that changed redeploys, so unrelated commits do not trigger full redeploys.
-- **Per-component deploy serialization.** Each Cloud Run workflow has its own concurrency group (`cancel-in-progress: false`), so repeat deploys for the same component do not overlap.
-- **Deploy the tested commit.** Deploys check out the exact commit CI ran on (`head_sha`), not the branch tip.
+- **CI gates deploy.** Production verifies CI for its exact commit; staging accepts only a
+  successful same-repository push run (or an explicit manual dispatch).
+- **Atomic release scope.** Every environment release deploys all components. This avoids
+  mixed RPC contracts, database expectations, and frontend/backend versions.
+- **Per-environment serialization.** Repeat deploys do not overlap.
+- **Deploy the tested commit.** Every reusable workflow checks out the orchestrator's
+  exact ref, not a moving branch tip.
 - **No stored cloud keys.** Backends authenticate to Google Cloud with Workload Identity Federation; runtime secrets come from Secret Manager.
 - **SHA-pinned actions.** Every action is pinned to a commit SHA to guard against supply-chain tampering.
-- **Smoke checks.** The API verifies `/health`; the frontend verifies the public site; gRPC services use Cloud Run startup/liveness probes plus service URL verification.
+- **Application smoke.** In addition to process probes, the API must successfully call
+  authenticated application health RPCs on both private gRPC services before frontend deploy.
+- **Fail-closed AI release evidence.** The current strict production report is not ready,
+  so a production deploy intentionally stops until rule and repair evidence meets policy.

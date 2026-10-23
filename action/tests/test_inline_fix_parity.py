@@ -51,10 +51,10 @@ def extract(source: str, declaration: str) -> str:
 
 
 def node_regions(cases: list[dict]) -> list:
-    """Run the real `computeRegions` and `primaryRegion` over the cases, in one node process."""
+    """Run the real `computeRegions` and `computeHunk` over the cases, in one node process."""
     assert INLINE_FIXES_JS.is_file(), f"expected the Node source at {INLINE_FIXES_JS}"
     source = INLINE_FIXES_JS.read_text(encoding="utf-8")
-    for name in ("function splitLines(", "function computeRegions(", "function primaryRegion("):
+    for name in ("function splitLines(", "function computeRegions(", "function computeHunk("):
         assert name in source, f"remediationInlineFixes.js no longer declares {name}text"
     assert "const MAX_ALIGNED_LINES = " in source, "MAX_ALIGNED_LINES is no longer declared"
 
@@ -63,11 +63,11 @@ def node_regions(cases: list[dict]) -> list:
             extract(source, "function splitLines("),
             source[source.index("const MAX_ALIGNED_LINES = ") :].split("\n")[0],
             extract(source, "function computeRegions("),
-            extract(source, "function primaryRegion("),
+            extract(source, "function computeHunk("),
             "const cases = JSON.parse(process.env.PARITY_CASES);",
             "const out = cases.map((c) => {",
             "  const regions = computeRegions(c.original, c.replacement, c.preferred);",
-            "  return { regions, primary: regions.length ? primaryRegion(regions, c.line) : null };",
+            "  return { regions, hunk: computeHunk(c.original, c.replacement, c.line) };",
             "});",
             "process.stdout.write(JSON.stringify(out));",
         ]
@@ -172,35 +172,29 @@ def test_compute_regions_matches_the_api_service():
 
 
 @pytest.mark.repo_definition
-def test_primary_region_matches_the_api_service():
+def test_complete_hunk_matches_the_api_service():
     expected = node_regions(CASES)
     for case, want in zip(CASES, expected, strict=True):
-        regions = inline_fixes.compute_regions(
-            case["original"], case["replacement"], case["preferred"]
-        )
-        got = inline_fixes.primary_region(regions, case["line"]) if regions else None
-        assert got == want["primary"], f"primaryRegion differs on {case!r}"
+        got = inline_fixes.compute_hunk(case["original"], case["replacement"], case["line"])
+        assert got == want["hunk"], f"computeHunk differs on {case!r}"
 
 
 def test_the_secret_key_shape_is_a_single_line_suggestion():
     """The trial's one fix, which was published as a diff because `hunk` was never filled."""
     regions = inline_fixes.compute_regions(SECRET_KEY_ORIGINAL, SECRET_KEY_REPLACEMENT, 5)
     assert len(regions) == 1
-    hunk = inline_fixes.primary_region(regions, 5)
+    hunk = inline_fixes.compute_hunk(SECRET_KEY_ORIGINAL, SECRET_KEY_REPLACEMENT, 5)
     assert hunk["start_line"] == 5
     assert hunk["end_line"] == 5
     assert hunk["replacement_lines"] == ["SECRET_KEY = os.environ['DJANGO_SECRET_KEY']"]
 
 
-def test_a_two_region_fix_keeps_the_finding_region_and_carries_the_rest():
-    regions = inline_fixes.compute_regions(TWO_REGION_ORIGINAL, TWO_REGION_REPLACEMENT, 5)
-    assert len(regions) == 2
-    hunk = inline_fixes.primary_region(regions, 5)
-    extras = [region for region in regions if region is not hunk]
-    assert hunk["start_line"] == 5 and hunk["end_line"] == 5
-    assert "execFile(" in hunk["replacement_lines"][0]
-    assert len(extras) == 1
-    assert "require('child_process')" in "\n".join(extras[0]["replacement_lines"])
+def test_a_two_region_fix_is_one_complete_clickable_repair():
+    hunk = inline_fixes.compute_hunk(TWO_REGION_ORIGINAL, TWO_REGION_REPLACEMENT, 5)
+    assert hunk["start_line"] == 2 and hunk["end_line"] == 5
+    replacement = "\n".join(hunk["replacement_lines"])
+    assert "require('child_process')" in replacement
+    assert "execFile(" in replacement
 
 
 @pytest.mark.repo_definition

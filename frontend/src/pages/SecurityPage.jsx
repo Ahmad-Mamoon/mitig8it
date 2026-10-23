@@ -154,7 +154,7 @@ export default function SecurityPage() {
           <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-20 lg:px-8">
             <h2 className={sectionHeading}>Data kept</h2>
             <FactList items={dataKept} />
-            <p className="mt-6 text-sm leading-6 text-neutral-500">
+            <p className="mt-6 text-sm leading-6 text-neutral-400">
               Each row is scoped to its GitHub installation.
             </p>
           </div>
@@ -175,7 +175,7 @@ export default function SecurityPage() {
             <div className="mt-8">
               <CtaPair user={user} onLogin={loginWithGitHub} />
             </div>
-            <p className="mt-8 text-sm text-neutral-500">
+            <p className="mt-8 text-sm text-neutral-400">
               Report a security issue to{' '}
               <a
                 href="mailto:support@mitig8it.com"

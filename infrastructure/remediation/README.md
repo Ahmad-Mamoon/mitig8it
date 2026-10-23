@@ -83,6 +83,15 @@ the separately reviewed provider, GCS, and telemetry upstream destinations.
 
 ## Safety gates and current limits
 
+The optional Cloud Run Jobs sandbox has a separate release gate in
+`services/remediation-service/scripts/cloud_run_sandbox_release.py`, called by the remediation
+deployment workflow. It requires fresh live namespace/network evidence from both variant
+tasks at the exact pinned image and uses short-lived impersonation of the remediation runtime
+identity. The receipt is bound to the release commit, job generation, identities and buckets,
+then checked against live job/execution state immediately before service deployment. Local
+tests cannot supply this proof. See [the Cloud Run runbook](../../docs/runbooks/sandbox-cloud-run-job.md)
+for the required release identity, environment variables and operator bootstrap steps.
+
 - `SANDBOX_NETWORK_POLICY_ATTESTED` and `SANDBOX_NODE_LIMITS_ATTESTED` remain
   hard-coded `false`. Change either only after staging evidence proves each
   check runs in its own gVisor Job, egress/metadata stay denied, bounded logs

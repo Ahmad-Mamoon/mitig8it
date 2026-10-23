@@ -17,20 +17,14 @@ const api = axios.create({
   }
 })
 
-export const setAuthToken = (token) => {
-  if (typeof window === 'undefined') return
-  if (!token) return
-  window.localStorage.removeItem('codesentry_auth_token')
-}
-
-export const clearAuthToken = () => {
-  if (typeof window === 'undefined') return
-  window.localStorage.removeItem('codesentry_auth_token')
-}
-
 export const markGithubReauthRequired = () => {
   if (typeof window === 'undefined') return
   window.localStorage.setItem(FORCE_REAUTH_KEY, '1')
+}
+
+const clearAuthToken = () => {
+  if (typeof window === 'undefined') return
+  window.localStorage.removeItem('codesentry_auth_token')
 }
 
 export const consumeGithubReauthRequired = () => {
@@ -252,14 +246,6 @@ export const analysisAPI = {
       }
       throw error
     }
-  }
-}
-
-export const webhookAPI = {
-  getEvents: async (limit = 50, offset = 0) => {
-    const q = new URLSearchParams({ limit: String(limit), offset: String(offset) }).toString()
-    const { data } = await api.get(`/api/webhooks/events?${q}`)
-    return data
   }
 }
 

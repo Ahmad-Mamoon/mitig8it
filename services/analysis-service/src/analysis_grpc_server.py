@@ -1,3 +1,4 @@
+import hmac
 import os
 import sys
 from concurrent import futures
@@ -149,10 +150,39 @@ class CorrelationInterceptor(grpc.ServerInterceptor):
         )
 
 
+class InternalAuthInterceptor(grpc.ServerInterceptor):
+    """Authenticate every application RPC before any analysis handler can run."""
+
+    def intercept_service(self, continuation, handler_call_details):
+        # Cloud Run startup/liveness probes cannot attach application credentials.
+        if handler_call_details.method == "/grpc.health.v1.Health/Check":
+            return continuation(handler_call_details)
+
+        expected = (
+            os.getenv("ANALYSIS_SERVICE_INTERNAL_SECRET")
+            or os.getenv("GITHUB_SERVICE_INTERNAL_SECRET")
+        )
+        status = grpc.StatusCode.UNAVAILABLE
+        detail = "Internal service auth is not configured"
+        if expected:
+            values = [value for key, value in (handler_call_details.invocation_metadata or ())
+                      if key == "x-internal-secret"]
+            provided = values[0] if len(values) == 1 and isinstance(values[0], str) else ""
+            if hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8")):
+                return continuation(handler_call_details)
+            status = grpc.StatusCode.UNAUTHENTICATED
+            detail = "Unauthorized"
+
+        def denied(request, context):
+            context.abort(status, detail)
+
+        return grpc.unary_unary_rpc_method_handler(denied)
+
+
 def create_server() -> grpc.Server:
     server = grpc.server(
         futures.ThreadPoolExecutor(max_workers=int(os.getenv("GRPC_WORKERS", "10"))),
-        interceptors=(CorrelationInterceptor(),),
+        interceptors=(InternalAuthInterceptor(), CorrelationInterceptor()),
     )
     analysis_pb2_grpc.add_AnalysisServiceServicer_to_server(AnalysisGrpcService(), server)
     health_servicer = health.HealthServicer()

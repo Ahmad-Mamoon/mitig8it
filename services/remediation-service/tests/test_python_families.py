@@ -373,7 +373,7 @@ async def test_engine_repairs_the_credential_and_eval_findings_and_skips_the_amb
     assert checks["generated_python_syntax"]["argv"] == ["python3", "-m", "py_compile", "text.py"]
     limitations = credential_candidate.preview["evidence"]["limitations"]
     assert "text.py now reads API_KEY from the environment; the deployment must provide it" in limitations
-    assert any(item.startswith("runtime load check skipped for text.py") for item in limitations)
+    assert any(item.startswith("runtime load check not performed on the service host for text.py") for item in limitations)
     assert credential_candidate.preview["evidence"]["candidate_source"] == "template"
     group = response.evidence["groups"][0]
     assert group["language"] == PYTHON

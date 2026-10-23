@@ -12,6 +12,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_
 from starlette.responses import Response
 
 import request_context
+from rule_publication import postable_rule_ids
 from finding_quality import (
     cluster_findings,
     extract_match_context,
@@ -28,7 +29,7 @@ from security_rules import (
     SECURITY_RULES,
     likely_llm_repo,
 )
-from opengrep_runner import ScanPathError, quarantined_rule_ids, run_opengrep, run_opengrep_with_limitations
+from opengrep_runner import ScanPathError, quarantined_rule_ids, run_opengrep_with_limitations
 from secret_detection import (
     POSTING as SECRET_DETECTOR_POSTING,
     POSTING_QUARANTINE as SECRET_POSTING_QUARANTINE,
@@ -46,7 +47,6 @@ from test_code_scope import (
     is_analyzable_path,
     is_non_code_text_path,
     is_runtime_scannable_path,
-    is_test_code_path,
 )
 
 
@@ -156,6 +156,9 @@ QUARANTINED_RULE_IDS = frozenset(
         if posting == SECRET_POSTING_QUARANTINE
     }
 )
+PUBLICATION_RULE_IDS = postable_rule_ids()
+if not PUBLICATION_RULE_IDS:
+    raise RuntimeError("No approved rule definitions: packaged publication evidence is missing, invalid, or stale")
 
 request_context.configure_logging(os.getenv("LOG_LEVEL", "INFO"))
 logger = request_context.get_logger("mitig8it.analysis")
@@ -493,11 +496,20 @@ def partition_by_posting_policy(
     quarantined: List[Dict[str, Any]] = []
     for finding in findings or []:
         rule_id = str(finding.get("rule_id") or "")
-        if rule_id in QUARANTINED_RULE_IDS:
+        if rule_id in QUARANTINED_RULE_IDS or rule_id not in PUBLICATION_RULE_IDS:
             quarantined.append(finding)
             QUARANTINED_FINDING_COUNT.labels(rule_id).inc()
         else:
-            postable.append(finding)
+            # Detector and Tier 3 model patches are advisory proposals, not verified
+            # candidates. The separate remediation service owns code generation,
+            # per-candidate sandbox verification, and publication. Never let a broad
+            # release flag turn an analysis snippet into a one-click GitHub commit.
+            published = {**finding, "remediation_patch": ""}
+            # The model's raw replacement field is not part of the public finding
+            # contract either. Drop it explicitly: HTTP returns dictionaries and
+            # cannot rely on protobuf's unknown-field omission for this boundary.
+            published.pop("fixed_code", None)
+            postable.append(published)
     return postable, quarantined
 
 
@@ -566,6 +578,10 @@ def analyze_pull_request_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
         findings = triage_findings(findings, file_patches, None)
     except Exception as e:
         print(f"LLM triage failed (non-blocking): {redact(e)}")
+    # Tier 3 may attach an advisory replacement after the detector findings passed
+    # the first publication filter. Reapply the boundary so analysis output can
+    # never carry executable code; verified remediation is a separate service.
+    findings, _triage_withheld = partition_by_posting_policy(findings)
     findings = classify_findings(findings)
 
     normalized = cluster_findings(classify_findings(findings))
@@ -648,7 +664,8 @@ def analyze_tier2_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
 
 
 def triage_findings_payload(payload: TriageRequest) -> Dict[str, Any]:
-    findings = payload.findings
+    original_count = len(payload.findings)
+    findings, _withheld = partition_by_posting_policy(payload.findings)
     if not findings:
         return {
             "repository_full_name": payload.repository_full_name,
@@ -656,15 +673,15 @@ def triage_findings_payload(payload: TriageRequest) -> Dict[str, Any]:
             "commit_sha": payload.commit_sha,
             "tier": 3,
             "findings": [],
-            "filtered_count": 0,
+            "filtered_count": original_count,
         }
 
-    original_count = len(findings)
     try:
         findings = triage_findings(findings, payload.file_patches, payload.repo_profile)
     except Exception as e:
         print(f"LLM triage failed (non-blocking): {redact(e)}")
 
+    findings, _withheld = partition_by_posting_policy(findings)
     triaged_count = len(findings)
 
     # Triage may adjust severity; test-code findings stay informational.

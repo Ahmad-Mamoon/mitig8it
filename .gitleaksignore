@@ -15,6 +15,46 @@ c08c138f0d9d46573ef7e8d88b4a442e46a348c9:services/api-service/tests/githubRemedi
 8642df179a1cad34929d4f7469794b663d405e9c:services/remediation-service/tests/test_proof_module_closure.py:generic-api-key:27
 74db4329332c283d55bcf5da072adadcf99a99e6:action/tests/test_repair_engine.py:generic-api-key:253
 
+# Security-evaluation fixtures from eb763f5d. The benchmark report contains deliberately
+# vulnerable fake literals; the publication inventory values are rule states whose keys name
+# credential rules; and the redaction tests require fake provider-key/private-key shapes.
+eb763f5d327efa86291cec7f8426acb80b4a507a:benchmarks/results/e2e-successes-2026-10-13.md:generic-api-key:58
+eb763f5d327efa86291cec7f8426acb80b4a507a:benchmarks/results/e2e-successes-2026-10-13.md:generic-api-key:65
+eb763f5d327efa86291cec7f8426acb80b4a507a:benchmarks/results/e2e-successes-2026-10-13.md:generic-api-key:99
+eb763f5d327efa86291cec7f8426acb80b4a507a:benchmarks/results/e2e-successes-2026-10-13.md:generic-api-key:111
+eb763f5d327efa86291cec7f8426acb80b4a507a:benchmarks/results/e2e-successes-2026-10-13.md:generic-api-key:117
+eb763f5d327efa86291cec7f8426acb80b4a507a:benchmarks/results/e2e-successes-2026-10-13.md:generic-api-key:126
+eb763f5d327efa86291cec7f8426acb80b4a507a:benchmarks/results/e2e-successes-2026-10-13.md:generic-api-key:137
+eb763f5d327efa86291cec7f8426acb80b4a507a:benchmarks/results/e2e-successes-2026-10-13.md:generic-api-key:144
+eb763f5d327efa86291cec7f8426acb80b4a507a:benchmarks/results/e2e-successes-2026-10-13.md:generic-api-key:155
+eb763f5d327efa86291cec7f8426acb80b4a507a:benchmarks/results/e2e-successes-2026-10-13.md:generic-api-key:164
+eb763f5d327efa86291cec7f8426acb80b4a507a:benchmarks/rule-quality/legacy-posting.json:generic-api-key:8
+eb763f5d327efa86291cec7f8426acb80b4a507a:benchmarks/rule-quality/legacy-posting.json:generic-api-key:26
+eb763f5d327efa86291cec7f8426acb80b4a507a:benchmarks/rule-quality/legacy-posting.json:generic-api-key:59
+eb763f5d327efa86291cec7f8426acb80b4a507a:benchmarks/rule-quality/legacy-posting.json:generic-api-key:62
+eb763f5d327efa86291cec7f8426acb80b4a507a:benchmarks/rule-quality/legacy-posting.json:generic-api-key:63
+eb763f5d327efa86291cec7f8426acb80b4a507a:benchmarks/rule-quality/legacy-posting.json:generic-api-key:138
+eb763f5d327efa86291cec7f8426acb80b4a507a:benchmarks/rule-quality/legacy-posting.json:generic-api-key:139
+eb763f5d327efa86291cec7f8426acb80b4a507a:benchmarks/rule-quality/legacy-posting.json:generic-api-key:140
+eb763f5d327efa86291cec7f8426acb80b4a507a:benchmarks/rule-quality/legacy-posting.json:generic-api-key:141
+eb763f5d327efa86291cec7f8426acb80b4a507a:benchmarks/rule-quality/legacy-posting.json:generic-api-key:142
+eb763f5d327efa86291cec7f8426acb80b4a507a:benchmarks/rule-quality/legacy-posting.json:generic-api-key:143
+eb763f5d327efa86291cec7f8426acb80b4a507a:benchmarks/rule-quality/legacy-posting.json:generic-api-key:144
+eb763f5d327efa86291cec7f8426acb80b4a507a:benchmarks/rule-quality/legacy-posting.json:generic-api-key:145
+eb763f5d327efa86291cec7f8426acb80b4a507a:benchmarks/rule-quality/legacy-posting.json:generic-api-key:146
+eb763f5d327efa86291cec7f8426acb80b4a507a:benchmarks/rule-quality/legacy-posting.json:generic-api-key:147
+eb763f5d327efa86291cec7f8426acb80b4a507a:benchmarks/rule-quality/legacy-posting.json:generic-api-key:151
+eb763f5d327efa86291cec7f8426acb80b4a507a:benchmarks/rule-quality/legacy-posting.json:generic-api-key:170
+eb763f5d327efa86291cec7f8426acb80b4a507a:benchmarks/rule-quality/legacy-posting.json:generic-api-key:179
+eb763f5d327efa86291cec7f8426acb80b4a507a:benchmarks/rule-quality/legacy-posting.json:generic-api-key:180
+eb763f5d327efa86291cec7f8426acb80b4a507a:benchmarks/rule-quality/legacy-posting.json:generic-api-key:197
+eb763f5d327efa86291cec7f8426acb80b4a507a:benchmarks/rule-quality/legacy-posting.json:generic-api-key:198
+eb763f5d327efa86291cec7f8426acb80b4a507a:benchmarks/rule-quality/legacy-posting.json:generic-api-key:199
+eb763f5d327efa86291cec7f8426acb80b4a507a:services/analysis-service/src/tests/test_llm_triage.py:generic-api-key:163
+eb763f5d327efa86291cec7f8426acb80b4a507a:services/remediation-service/tests/test_source_redaction.py:aws-access-token:38
+eb763f5d327efa86291cec7f8426acb80b4a507a:services/remediation-service/tests/test_source_redaction.py:generic-api-key:198
+eb763f5d327efa86291cec7f8426acb80b4a507a:services/remediation-service/tests/test_source_redaction.py:private-key:63
+
 # The benchmark's own no-finding cases quote the four repository lines that gitleaks reads as
 # credentials, which is the whole point of those cases: an idempotency key is a request
 # de-duplication identifier, not a secret, and the detector must stay silent on it. Quoting a

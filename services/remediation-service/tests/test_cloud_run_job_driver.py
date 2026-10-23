@@ -161,7 +161,7 @@ def task_result(env: dict, variant: str, execution: str, *, exit_code: int, prob
         "duration_ms": 12,
         "probes": denied_probes() if probes is None else probes,
         "runner": {"job_execution": execution, "task_index": VARIANTS.index(variant), "image_digest": image,
-                   "environment_kind": "cloud-run-job"},
+                   "environment_kind": "cloud-run-job", "network_namespace": "applied"},
         **extra,
     }
 
@@ -345,6 +345,7 @@ def test_a_result_signed_with_another_nonce_is_not_evidence():
     assert check["candidate"]["exit_code"] is None
     # No task result survived, so nothing measured a probe and nothing is claimed about one.
     assert check["candidate"]["network_probes"] == {}
+    assert driver.runner_identity(request)["network"] == "unknown"
 
 
 def test_a_result_naming_another_check_is_not_evidence():
@@ -415,6 +416,39 @@ def test_a_probe_that_could_not_run_is_refused_exactly_like_one_that_connected()
 
     result = driver_with(storage, FakeJobs(responder(storage, documents=documents))).execute(payload(), 300)
     assert result["reason_code"] == "sandbox_network_not_denied"
+
+
+@pytest.mark.parametrize("namespace", [None, "unavailable"])
+def test_denied_probes_without_the_namespace_control_are_not_evidence(namespace):
+    storage = FakeStorage()
+
+    def documents(env, variant, execution):
+        record = task_result(env, variant, execution, exit_code=0)
+        record["runner"]["network_namespace"] = namespace
+        return record
+
+    driver = driver_with(storage, FakeJobs(responder(storage, documents=documents)))
+    request = payload()
+    result = driver.execute(request, 300)
+    assert result == {"outcome": "inconclusive", "reason_code": "sandbox_network_not_denied", "checks": []}
+    assert driver.runner_identity(request)["network"] == "unknown"
+
+
+def test_a_task_refused_before_execution_preserves_its_reason_and_claims_no_network_denial():
+    storage = FakeStorage()
+
+    def documents(env, variant, execution):
+        record = task_result(env, variant, execution, exit_code=0)
+        record.update(completed=False, exit_code=None, probes={}, reason_code="sandbox_network_namespace_unavailable")
+        record["runner"]["network_namespace"] = "unavailable"
+        return record
+
+    driver = driver_with(storage, FakeJobs(responder(storage, documents=documents)))
+    request = payload()
+    result = driver.execute(request, 300)
+    assert result["outcome"] == "inconclusive"
+    assert result["checks"][0]["candidate"]["reason_code"] == "sandbox_network_namespace_unavailable"
+    assert driver.runner_identity(request)["network"] == "unknown"
 
 
 def test_a_check_that_timed_out_keeps_its_reason_and_never_reads_as_a_pass():

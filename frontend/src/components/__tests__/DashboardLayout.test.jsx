@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import DashboardLayout from '../DashboardLayout'
@@ -56,7 +56,7 @@ describe('DashboardLayout', () => {
     }
   })
 
-  it('keeps the full navigation visible during onboarding', () => {
+  it('shows only working product surfaces during onboarding', () => {
     render(
       <MemoryRouter initialEntries={['/dashboard/home']}>
         <DashboardLayout />
@@ -67,7 +67,12 @@ describe('DashboardLayout', () => {
     expect(screen.getByRole('link', { name: 'Onboarding' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Repositories' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Reports' })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Subscription' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Suppressions' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Settings' })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Subscription' })).toBeNull()
+    expect(screen.queryByRole('link', { name: 'Code Playground' })).toBeNull()
+    expect(screen.queryByRole('link', { name: 'Support' })).toBeNull()
+    expect(screen.queryByRole('link', { name: 'Profile' })).toBeNull()
     expect(screen.getByRole('heading', { name: 'Getting Started' })).toBeInTheDocument()
     expect(screen.queryByText('Next step: connect repo')).toBeNull()
   })
@@ -88,7 +93,27 @@ describe('DashboardLayout', () => {
 
     expect(screen.getByRole('link', { name: 'Dashboard' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Reports' })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Subscription' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Suppressions' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Settings' })).toBeInTheDocument()
     expect(screen.getByText('4 analyses recorded')).toBeInTheDocument()
+  })
+
+  it('provides an accessible mobile navigation drawer', () => {
+    render(
+      <MemoryRouter initialEntries={['/dashboard/home']}>
+        <DashboardLayout />
+      </MemoryRouter>
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Open navigation' })
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
+
+    fireEvent.click(trigger)
+
+    expect(trigger).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByLabelText('Dashboard navigation')).toBeInTheDocument()
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.queryByLabelText('Dashboard navigation')).toBeNull()
   })
 })

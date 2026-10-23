@@ -1,8 +1,25 @@
 const grpc = require('@grpc/grpc-js');
 const http = require('http');
 const logger = require('../utils/logger');
+const requestContext = require('../utils/requestContext');
 
 const tokenCache = new Map();
+
+// Cloud Run identity metadata authenticates at ingress. The shared secret also
+// authenticates the call inside the service, including when ingress is bypassed.
+function createInternalGrpcMetadata(secret) {
+  if (!secret) {
+    throw new Error('Internal service auth is not configured');
+  }
+  // grpc-js includes illegal metadata values in its validation error. Validate
+  // first so a misconfigured secret cannot be copied into an error or log.
+  if (typeof secret !== 'string' || !/^[\x20-\x7e]+$/.test(secret)) {
+    throw new Error('Internal service auth must use printable ASCII characters');
+  }
+  const metadata = requestContext.toGrpcMetadata(grpc.Metadata);
+  metadata.set('x-internal-secret', secret);
+  return metadata;
+}
 
 function normalizeGrpcTarget(rawTarget, fallbackTarget) {
   const value = rawTarget || fallbackTarget;
@@ -240,6 +257,7 @@ function createGrpcClientConfig({ target, fallbackTarget, audience }) {
 
 module.exports = {
   createGrpcClientConfig,
+  createInternalGrpcMetadata,
   getIdentityToken,
   normalizeAudience,
   normalizeGrpcTarget,

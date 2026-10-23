@@ -118,7 +118,6 @@ function severityIcon(severity) {
 }
 
 const normalizeSuggestionPatch = validatorPrivate.normalizePatch;
-const looksLikeUnifiedDiff = validatorPrivate.looksLikeUnifiedDiff;
 const buildRepoAwareRemediation = validatorPrivate.buildRepoAwareRemediation;
 let analysisGrpcClient = null;
 let githubGrpcClient = null;
@@ -156,27 +155,6 @@ function shouldRenderSuggestion(finding, suggestionPatch) {
   if (patchLines < anchorSpan) return false;
   if (patchLines > anchorSpan + 3) return false;
 
-  return true;
-}
-
-function inferCodeFenceLanguage(filePath) {
-  const path = String(filePath || '').toLowerCase();
-  if (path.endsWith('.py')) return 'python';
-  if (path.endsWith('.ts') || path.endsWith('.tsx')) return 'ts';
-  if (path.endsWith('.js') || path.endsWith('.jsx')) return 'javascript';
-  if (path.endsWith('.go')) return 'go';
-  if (path.endsWith('.java')) return 'java';
-  if (path.endsWith('.rb')) return 'ruby';
-  if (path.endsWith('.cs')) return 'csharp';
-  if (path.endsWith('.php')) return 'php';
-  return '';
-}
-
-function shouldRenderFixCodeBlock(suggestionPatch) {
-  if (!suggestionPatch) return false;
-  if (suggestionPatch.includes('```')) return false;
-  if (looksLikeUnifiedDiff(suggestionPatch)) return false;
-  if (suggestionPatch.split('\n').length > 20) return false;
   return true;
 }
 
@@ -416,12 +394,6 @@ function buildPlacementLine(total, options = {}) {
 
 function buildReviewComment(finding, options = {}) {
   const suggestionPatch = normalizeSuggestionPatch(finding.remediation_patch);
-  const suggestionValidation = validateSuggestedFix({
-    finding,
-    filePatch: options.filePatch || '',
-    tierLabel: options.tierLabel || 'manual',
-    repoProfile: options.repoProfile || null,
-  });
   const repoAwareRemediation =
     buildRepoAwareRemediation(finding, options.repoProfile || null)
     || finding.remediation
@@ -459,18 +431,10 @@ function buildReviewComment(finding, options = {}) {
   const remediationRepeatsWhatWasSaid = sameSentence(repoAwareRemediation, finding.title)
     || sameSentence(repoAwareRemediation, finding.description);
 
-  const showSuggestion = shouldRenderSuggestion(finding, suggestionPatch) && suggestionValidation.ok;
-  const showFixCodeBlock = !showSuggestion && shouldRenderFixCodeBlock(suggestionPatch);
-  const codeFenceLanguage = inferCodeFenceLanguage(finding.file_path);
-
-  if (showSuggestion) {
-    lines.push('', '```suggestion', suggestionPatch, '```');
-  } else {
-    if (!remediationRepeatsWhatWasSaid) lines.push('', `**Fix:** ${markdownEscape(repoAwareRemediation)}`);
-    if (showFixCodeBlock) {
-      lines.push('', `\`\`\`${codeFenceLanguage}`, suggestionPatch, '```');
-    }
-  }
+  // Triage proposals have not executed against the complete repository. Only
+  // remediationInlineFixes may publish code, after independent repair verification.
+  if (!remediationRepeatsWhatWasSaid) lines.push('', `**Fix:** ${markdownEscape(repoAwareRemediation)}`);
+  if (suggestionPatch) lines.push('', 'Automatic replacement withheld: this proposal has not been independently verified.');
 
   return lines.filter(Boolean).join('\n');
 }
@@ -1133,7 +1097,7 @@ async function postReviewToGitHub({ actionable, files, owner, repo, prNumber, in
           repoProfile,
         });
         const gatePassed = shouldRenderSuggestion(f, suggestionPatch);
-        const hasSuggestion = gatePassed && suggestionValidation.ok;
+        const hasSuggestion = false;
 
         if (hasSuggestion) {
           suggestionStats.rendered += 1;
@@ -1143,7 +1107,7 @@ async function postReviewToGitHub({ actionable, files, owner, repo, prNumber, in
           suggestionStats.gateRejected += 1;
         } else {
           suggestionStats.validatorRejected += 1;
-          const reason = suggestionValidation.reason || 'unknown';
+          const reason = suggestionValidation.ok ? 'independent_verification_required' : suggestionValidation.reason || 'unknown';
           rejectionReasons[reason] = (rejectionReasons[reason] || 0) + 1;
         }
 

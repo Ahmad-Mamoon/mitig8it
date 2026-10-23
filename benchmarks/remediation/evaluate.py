@@ -28,6 +28,10 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent
 REPOSITORY_ROOT = ROOT.parents[1]
 SERVICE_ROOT = REPOSITORY_ROOT / "services" / "remediation-service"
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
+from benchmarks.quality_gate import precision_gate
+
 FIXTURES = ROOT / "fixtures"
 KNOWN_FAILURES_FILE = ROOT / "known-failures.json"
 DEFAULT_BUDGET = {"max_tool_calls": 20, "max_attempts": 3, "max_input_tokens": 120000,
@@ -870,8 +874,10 @@ def wilson_interval(successes: int, total: int, z: float = 1.96) -> list[float |
 def summarize(results: list[CaseResult]) -> dict[str, Any]:
     positives = [result for result in results if result.kind == "supported"]
     negatives = [result for result in results if result.kind in NEGATIVE_KINDS]
-    verified = [result for result in positives if result.observed_state == "ready"]
-    correct = [result for result in positives if result.outcome == "passed"]
+    # An unsafe ready patch on a negative is a false positive too. Excluding it
+    # from the denominator made unsafe publication disappear from precision.
+    verified = [result for result in results if result.observed_state == "ready"]
+    correct = [result for result in positives if result.observed_state == "ready" and result.outcome == "passed"]
     abstentions = [result for result in negatives if result.outcome == "passed"]
     costs = sum(float(result.usage.get("cost_usd", 0) or 0) for result in results)
     precision = len(correct) / len(verified) if verified else None
@@ -909,6 +915,24 @@ def passed_by_verification_level(results: list[CaseResult]) -> dict[str, list[st
 def release_gate(fixtures: list[tuple[Path, dict[str, Any]]], results: list[CaseResult]) -> dict[str, Any]:
     manifest = json.loads((ROOT / "release-manifest.json").read_text(encoding="utf-8"))
     reasons: list[str] = []
+    expected_ids = {fixture["id"] for _, fixture in fixtures}
+    actual_ids = [result.fixture_id for result in results]
+    if set(actual_ids) != expected_ids or len(actual_ids) != len(expected_ids):
+        reasons.append("fixture_results_missing_duplicate_or_unexpected")
+    # Training and validation are useful during development, but cannot support
+    # a promotion claim. Include every published patch, including unsafe negatives.
+    holdout = [result for result in results if result.split == "holdout"]
+    published = [result for result in holdout if result.observed_state == "ready"]
+    correct = [result for result in published if result.kind == "supported" and result.outcome == "passed"]
+    precision = precision_gate(len(correct), len(published),
+                               unresolved=sum(result.outcome == "inconclusive" for result in holdout),
+                               minimum_samples=manifest.get("minimum_precision_predictions", 100),
+                               precision_floor=manifest["release_precision_floor"])
+    reasons.extend(precision["reasons"])
+    holdout_supported = [result for result in holdout if result.kind == "supported"]
+    coverage = len(correct) / len(holdout_supported) if holdout_supported else None
+    if coverage is None or coverage < manifest["release_coverage_floor"]:
+        reasons.append("holdout_coverage_below_floor")
     if len(fixtures) < manifest["minimum_cases"]:
         reasons.append(f"minimum_cases_not_met:{len(fixtures)}/{manifest['minimum_cases']}")
     kinds = {kind: sum(1 for _, fixture in fixtures if fixture["kind"] == kind) for kind in ("supported", "negative", "adversarial")}
@@ -944,6 +968,7 @@ def release_gate(fixtures: list[tuple[Path, dict[str, Any]]], results: list[Case
     if any(result.outcome != "passed" for result in results):
         reasons.append("fixture_results_not_all_passed")
     return {"passed": False, "reasons": reasons or ["release_signature_verification_not_configured"],
+            "precision_gate": precision, "holdout_coverage": coverage,
             "manifest_digest": canonical_digest(manifest), "manifest": manifest}
 
 

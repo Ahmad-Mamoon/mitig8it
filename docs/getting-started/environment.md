@@ -25,7 +25,8 @@ You still need real GitHub OAuth/App credentials for the full webhook and dashbo
 
 | Variable | Used by | Description |
 |---|---|---|
-| `DATABASE_URL` | API, GitHub service | PostgreSQL connection string for standalone runs; Compose overrides it to use `postgres:5432`. |
+| `DATABASE_URL` | API; local GitHub HTTP service | PostgreSQL connection string for standalone runs; Compose overrides it to use `postgres:5432`. Production API uses a restricted runtime login; the deployed stateless GitHub gRPC service has no database credential. |
+| `DATABASE_MIGRATION_URL` | Administrative provisioning only | Separate migration/role-management connection used by `npm run db:provision-runtime`. Never mount in a running API or worker. See [runtime role setup](../runbooks/runtime-database-role.md). |
 | `JWT_SECRET` | API | Signs dashboard session JWTs and OAuth state. |
 | `ENCRYPTION_KEY` | API | 64 hex characters; encrypts stored GitHub OAuth tokens. |
 | `GITHUB_CLIENT_ID` | API | GitHub OAuth App client ID. |
@@ -53,7 +54,10 @@ You still need real GitHub OAuth/App credentials for the full webhook and dashbo
 | `LLM_MODEL` / `LLM_TRIAGE_MODEL` | Analysis service | Optional Tier 3 model name. Defaults to `gemini-2.5-flash-lite` for `gemini` and `gpt-4o-mini` otherwise. |
 | `LLM_API_KEY` | Analysis service | Generic Tier 3 LLM API key. Preferred for production Secret Manager wiring. |
 | `LLM_BASE_URL` | Analysis service | Required only for `openai_compatible` providers. |
-| `GEMINI_API_KEY` / `OPENAI_API_KEY` | Analysis service | Provider-specific fallback keys for local development. |
+| `GEMINI_API_KEY` / `OPENAI_API_KEY` | Analysis service; API profiler when explicitly enabled | Provider-specific fallback keys for local development. An API key alone never enables repository-source export. |
+| `REPO_PROFILER_LLM_ENABLED` | API | Enables optional model interpretation of the deterministic repository profile only when the source-export flag is also true. Defaults to `false`. |
+| `REPO_PROFILER_ALLOW_SOURCE_EXPORT` | API | Explicit consent to send redacted repository snippets to the configured profiler provider. Defaults to `false`; keep disabled for repositories whose policy prohibits third-party processing. |
+| `REPO_PROFILER_LLM_MODEL` | API | Required exact model ID for repository profiling when both opt-ins are true. There is no implicit fallback model; promote a pinned model only after evaluation. |
 | `ANALYSIS_CACHE_TTL_DAYS` | Analysis service | Cache retention setting used by analysis cache helpers. |
 | `REDIS_URL` | Analysis service | Reserved for cache-backed analysis behavior; the current local Compose stack does not start Redis. |
 | `EMAIL_USER` | GitHub service | Optional SMTP user for email notifications. |
@@ -110,8 +114,13 @@ The authoritative list, with the values used by the single-instance development 
 Production values are injected by GitHub Actions and Cloud Run:
 
 - GitHub Actions repository variables provide project IDs, region, frontend/API URLs, and service account metadata.
-- GitHub Actions secrets provide deploy-time tokens such as `FIREBASE_TOKEN`, `CODESENTRY_INTERNAL_SECRET`, and `CODESENTRY_WEBHOOK_SECRET`.
-- GCP Secret Manager provides runtime secrets such as `codesentry-database-url`, `codesentry-jwt-secret`, GitHub App credentials, `codesentry-gemini-api-key`, and the four repair secrets `codesentry-remediation-internal-secret`, `codesentry-repair-llm-base-url`, `codesentry-repair-llm-api-key`, and `codesentry-repair-llm-model`.
+- GitHub Actions secrets provide deployment credentials only: `FIREBASE_TOKEN` and,
+  when Workload Identity Federation is unavailable, `GCP_SA_KEY`.
+- GCP Secret Manager provides every runtime credential, including the separate
+  `codesentry-database-url` migration identity and `codesentry-database-runtime-url`
+  restricted runtime identity, `codesentry-internal-secret`,
+  `codesentry-webhook-secret`, JWT/encryption and GitHub App credentials,
+  `codesentry-gemini-api-key`, and the four repair secrets.
 - The remediation feature flags themselves are set on the API service out of band, not by any workflow.
 
 See [cloud-run-firebase.md](../deployment/cloud-run-firebase.md).

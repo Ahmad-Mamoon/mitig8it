@@ -3,6 +3,8 @@
 jest.mock('../src/config/database', () => ({ pool: { query: jest.fn(), connect: jest.fn() }, transaction: jest.fn() }));
 jest.mock('../src/utils/logger', () => ({ warn: jest.fn(), error: jest.fn(), info: jest.fn() }));
 jest.mock('../src/services/remediationInlineFixes', () => ({ publishInlineFixes: jest.fn() }));
+// Workflow mechanics after release admission; production refusal has its own tests.
+jest.mock('../src/quality-release.json', () => ({ schema_version: 'v1', remediation_release_verified: true }));
 
 const { pool } = require('../src/config/database');
 const connect = pool.connect;

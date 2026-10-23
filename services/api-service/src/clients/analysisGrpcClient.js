@@ -1,10 +1,8 @@
-const grpc = require('@grpc/grpc-js');
 const structPb = require('google-protobuf/google/protobuf/struct_pb');
 const analysisPb = require('../grpc/generated/analysis_pb');
 const analysisGrpc = require('../grpc/generated/analysis_grpc_pb');
 const commonPb = require('../grpc/generated/common_pb');
-const { createGrpcClientConfig } = require('./grpcConnection');
-const requestContext = require('../utils/requestContext');
+const { createGrpcClientConfig, createInternalGrpcMetadata } = require('./grpcConnection');
 const {
   changedFileToMessage,
   findingToMessage,
@@ -16,7 +14,9 @@ function unary(client, method, request, timeoutMs) {
     const deadline = new Date(Date.now() + timeoutMs);
     // The analysis service logs under the same delivery and run identifiers because
     // they travel with the call, not because a caller remembered to pass them.
-    const metadata = requestContext.toGrpcMetadata(grpc.Metadata);
+    const metadata = createInternalGrpcMetadata(
+      process.env.ANALYSIS_SERVICE_INTERNAL_SECRET || process.env.GITHUB_SERVICE_INTERNAL_SECRET
+    );
     client[method](request, metadata, { deadline }, (error, response) => {
       if (error) {
         reject(error);
@@ -119,6 +119,23 @@ class AnalysisGrpcClient {
   async triageFindings(payload, timeoutMs = 120000) {
     const response = await unary(this.client, 'triageFindings', buildTriageRequest(payload), timeoutMs);
     return triageResponseToPlain(response);
+  }
+
+  // This is the application HealthCheck RPC, not the unauthenticated standard
+  // gRPC probe. Calling it proves Cloud Run identity transport and the shared
+  // application credential both reached the analysis service.
+  async healthCheck(_payload = {}, timeoutMs = 10000) {
+    const response = await unary(
+      this.client,
+      'healthCheck',
+      new commonPb.HealthCheckRequest(),
+      timeoutMs
+    );
+    return {
+      status: response.getStatus(),
+      service: response.getService(),
+      version: response.getVersion(),
+    };
   }
 }
 

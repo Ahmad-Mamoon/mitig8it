@@ -183,7 +183,9 @@ function buildReviewBody(request) {
     lines.push(`${plural(totals.informational, 'informational finding')} in test code, not posted.`);
   }
 
-  if (request.modelConfigured) {
+  if (request.fixesWithheldReason === 'independent_release_evidence_missing') {
+    lines.push('Fix suggestions are withheld because independent release evidence is missing.');
+  } else if (request.modelConfigured) {
     lines.push(`Fixes were generated with model assistance. ${plural(fixes, 'suggestion')} attached.`);
   } else {
     // Stated on every run without a key, because a reader is entitled to know which half of the

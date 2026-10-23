@@ -119,10 +119,11 @@ has to decide for itself is everything a pull request answered by being a diff:
   a tree is sent in batches of at most 120 files or 1.5 MB, each in its own worker under its
   own wall clock, and the findings are merged.
 
-`--include-quarantined` empties the posting policy inside the worker so a quarantined rule's
-findings are recorded. Nothing downstream is fooled: `score.py` re-applies the policy from
-the rule files and reports quarantined findings separately. Without it a run cannot tell
-whether a quarantined rule has earned its way back.
+`--include-quarantined` temporarily admits the union of declared posting and quarantined rule
+ids inside the worker so a quarantined rule's findings are recorded. It does not admit rules
+outside those reviewed policy sets. Nothing downstream is fooled: `score.py` re-applies each
+rule's status from the rule files and reports quarantined findings separately. Without it a
+run cannot tell whether a quarantined rule has earned its way back.
 
 `score.py` joins findings to labels by repository, ref, path and overlapping line range,
 within two lines of slack. Recall falls out of that join. Precision does not, because these

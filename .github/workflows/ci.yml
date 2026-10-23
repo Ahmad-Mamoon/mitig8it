@@ -3,13 +3,13 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, staging]
 
-# Cancel duplicate runs on feature branches; do not cancel on main (avoids
-# aborting the run that deploy workflows wait on when pushes are back-to-back).
+# Cancel duplicate runs on feature branches; do not cancel on deploy branches (avoids
+# aborting the run that an environment deployment waits on when pushes are back-to-back).
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/staging' }}
 
 # Least privilege: only what these jobs need. dependency-review uses the
 # default GITHUB_TOKEN to read the dependency graph and PR diff.
@@ -105,9 +105,11 @@ jobs:
           psql postgres://postgres:postgres@localhost:5432/postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE mitig8it_access_test'
           psql postgres://postgres:postgres@localhost:5432/postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE mitig8it_lifecycle_test'
           psql postgres://postgres:postgres@localhost:5432/postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE mitig8it_purge_test'
+          psql postgres://postgres:postgres@localhost:5432/postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE mitig8it_runtime_role_test'
           DATABASE_URL=postgres://postgres:postgres@localhost:5432/mitig8it_access_test npm run test:integration:access
           DATABASE_URL=postgres://postgres:postgres@localhost:5432/mitig8it_lifecycle_test npm run test:integration:lifecycle
           DATABASE_URL=postgres://postgres:postgres@localhost:5432/mitig8it_purge_test npm run test:integration:purge
+          DATABASE_URL=postgres://postgres:postgres@localhost:5432/mitig8it_runtime_role_test npm run test:integration:runtime-role
       - name: Migration pipeline check
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
@@ -157,6 +159,14 @@ jobs:
           -x ./tests -x ./grpc_generated -x ./grpc_server/generated
           -s B608
       - run: pytest tests -q
+
+      - name: Rule publication precision gate
+        working-directory: ${{ github.workspace }}
+        run: |
+          python -m pytest benchmarks/test_detection_evaluation.py benchmarks/test_eval.py \
+            benchmarks/test_quality_gate.py benchmarks/test_production_readiness.py -q
+          python -m benchmarks.rule_quality_gate
+          python -m benchmarks.production_readiness --report-only
 
   docker-build:
     name: Docker image (${{ matrix.name }})

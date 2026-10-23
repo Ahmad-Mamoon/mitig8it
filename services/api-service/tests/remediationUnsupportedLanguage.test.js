@@ -6,6 +6,7 @@
 // check is a per-finding skip, exactly as the documented abstain table says.
 jest.mock('../src/config/database', () => ({ pool: { query: jest.fn(), connect: jest.fn() }, transaction: jest.fn() }));
 jest.mock('../src/utils/logger', () => ({ warn: jest.fn(), error: jest.fn(), info: jest.fn() }));
+jest.mock('../src/quality-release.json', () => ({ schema_version: 'v1', remediation_release_verified: true }));
 
 const fs = require('fs');
 const path = require('path');

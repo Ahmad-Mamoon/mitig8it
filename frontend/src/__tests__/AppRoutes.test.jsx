@@ -41,20 +41,15 @@ vi.mock('../pages/AuthCallbackPage', () => ({ default: () => <div>Auth Callback<
 vi.mock('../pages/DashboardPage', () => ({ default: () => <div>Dashboard Home</div> }))
 vi.mock('../pages/OnboardingPage', () => ({ default: () => <div>Onboarding Page</div> }))
 vi.mock('../pages/ReportsPage', () => ({ default: () => <div>Reports Page</div> }))
-vi.mock('../pages/CodeAnalysisTest', () => ({ default: () => <div>Analysis Page</div> }))
 vi.mock('../pages/RepositoriesPage', () => ({ default: () => <div>Repositories Page</div> }))
 vi.mock('../pages/RepositoryDetailsPage', () => ({ default: () => <div>Repository Details</div> }))
 vi.mock('../pages/PullRequestFindingsPage', () => ({ default: () => <div>PR Findings</div> }))
 vi.mock('../pages/FindingDetailPage', () => ({ default: () => <div>Finding Detail</div> }))
 vi.mock('../pages/SuppressionsPage', () => ({ default: () => <div>Suppressions</div> }))
-vi.mock('../pages/SubscriptionPage', () => ({ default: () => <div>Subscription</div> }))
-vi.mock('../pages/SupportPage', () => ({ default: () => <div>Support</div> }))
-vi.mock('../pages/ProfilePage', () => ({ default: () => <div>Profile</div> }))
 vi.mock('../pages/PrivacyPage', () => ({ default: () => <div>Privacy</div> }))
 vi.mock('../pages/TermsPage', () => ({ default: () => <div>Terms</div> }))
 vi.mock('../pages/ExamplesPage', () => ({ default: () => <div>Examples</div> }))
 vi.mock('../pages/BenchmarksPage', () => ({ default: () => <div>Benchmarks</div> }))
-vi.mock('../pages/CustomersPage', () => ({ default: () => <div>Customers</div> }))
 vi.mock('../pages/SecurityPage', () => ({ default: () => <div>Security</div> }))
 vi.mock('../pages/SettingsPage', () => ({ default: () => <div>Settings</div> }))
 
@@ -114,5 +109,30 @@ describe('AppRoutes onboarding redirects', () => {
     )
 
     expect(screen.getByText('Home Page')).toBeInTheDocument()
+  })
+
+  it.each([
+    '/dashboard/analysis',
+    '/dashboard/subscription',
+    '/dashboard/support',
+    '/dashboard/profile',
+  ])('redirects unfinished product surface %s to dashboard home', (path) => {
+    render(
+      <MemoryRouter initialEntries={[path]}>
+        <AppRoutes />
+      </MemoryRouter>
+    )
+
+    expect(screen.getByText('Dashboard Home')).toBeInTheDocument()
+  })
+
+  it('redirects the unsupported customers claim to product evidence', () => {
+    render(
+      <MemoryRouter initialEntries={['/customers']}>
+        <AppRoutes />
+      </MemoryRouter>
+    )
+
+    expect(screen.getByText('Examples')).toBeInTheDocument()
   })
 })

@@ -45,7 +45,7 @@ describe('HomePage', () => {
     expect(screen.getByRole('heading', { name: /Applied by you, in the PR/i })).toBeInTheDocument()
     expect(
       screen.getByText(
-        /Mitig8it finds exploitable code in every pull request, proves a fix, and posts it as a one-click suggestion/i
+        /Mitig8it reviews changed code for high-confidence security issues/i
       )
     ).toBeInTheDocument()
     expect(screen.getAllByRole('link', { name: 'See sample review' })[0]).toHaveAttribute(
@@ -74,6 +74,7 @@ describe('HomePage', () => {
     expect(screen.getByRole('heading', { name: 'Built to be trusted' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Try it on one repository' })).toBeInTheDocument()
     expect(screen.getByText('Nothing is applied or merged automatically.')).toBeInTheDocument()
+    expect(screen.getByText('Explicit abstention when proof does not pass')).toBeInTheDocument()
   })
 
   it('claims nothing that is not shipped', () => {
@@ -86,6 +87,8 @@ describe('HomePage', () => {
     expect(screen.queryByText('Coming soon')).toBeNull()
     expect(screen.queryByText('In progress')).toBeNull()
     expect(screen.getAllByText('Live now').length).toBe(4)
+    expect(screen.queryByText(/finds exploitable code in every pull request/i)).toBeNull()
+    expect(screen.queryByText(/each fix proven by a generated regression test/i)).toBeNull()
   })
 
   it('shows workspace entry for signed-in users', () => {
