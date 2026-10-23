@@ -1,0 +1,2 @@
+# Offline release-review authentication only; do not install in service images.
+cryptography==50.0.2

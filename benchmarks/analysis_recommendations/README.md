@@ -157,10 +157,45 @@ after the HTTP response and gRPC transport round-trip both complete. The report'
 `evaluation_status` stays `in_progress` until every planned row finishes, then
 becomes `passed` or `failed`. Keyword matching is labelled a heuristic.
 
+Reports use schema version 2. They retain the exact selected case IDs, repeat
+count, and planned live/fault requests. Passing requires exactly one completed
+row for every planned `(mode, case_id, repeat)`, including both fault checks;
+matching only a total count is insufficient. Every completed row must carry
+the required verdict, ambiguity, model-call, transport, and applicable advisory
+metrics plus explicit `replacement_validation`. The verifier recomputes scores
+from the saved verdicts/HTTP response, checks the transported recommendation,
+reruns the parse-only replacement validation, and recomputes the summary. It
+rejects missing fields, duplicate rows, non-finite numbers, and inconsistent
+summaries instead of treating absent measurements as passes.
+
+Verify a saved report without a provider call or upload:
+
+```sh
+.venv/analysis/bin/python benchmarks/analysis_recommendations/run.py \
+  --verify-only benchmarks/results/recommendations-live.json
+```
+
+This checks fixture, prompt, service/gRPC-source, and evaluator digests against
+the current checkout, then verifies the stored terminal status. Supply the same
+`--cases` file for a custom suite. Exit 0 means the current local smoke report
+passed; a valid but failed experiment, stale report, or incomplete/legacy report
+exits 1. Historical schema-1 reports remain observations of their original run,
+but cannot pass this check or be uploaded as current evidence. Do not rewrite
+their digests or fill in absent measurements: rerun the evaluation. A faults-only
+report is explicitly `fault_recovery_smoke`, with zero live-model requests.
+
+These checks establish local consistency and scope, not authenticity: editable
+JSON and matching hashes are not signatures or independent review. No report
+from this runner establishes recommendation accuracy on real traffic, semantic
+correctness, production readiness, or permission to publish inline fixes.
+
 ## Upload saved observations to free LangSmith
 
 First confirm the free allowance and no-card setting. This separate step makes
-no model calls. Use the existing optional SDK in `.venv/remediation`:
+no model calls. Saved report validation runs before any external client is
+created; only complete, current, internally consistent reports are accepted.
+A complete failed experiment can still be uploaded as a failed observation.
+Use the existing optional SDK in `.venv/remediation`:
 
 ```sh
 LANGSMITH_WORKSPACE_ID=<your-workspace-id> \
