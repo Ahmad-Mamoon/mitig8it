@@ -18,7 +18,8 @@ def test_legacy_compatibility_is_never_reported_as_production_readiness():
     report = readiness.build_report()
     assert report["compatibility_admission_passed"]
     assert not report["production_ready"]
-    assert report["analysis"]["counts"]["legacy_unvalidated"] == 201
+    legacy = json.loads((ROOT / "benchmarks/rule-quality/legacy-posting.json").read_text())
+    assert report["analysis"]["counts"]["legacy_unvalidated"] == len(legacy["rules"])
     assert report["analysis"]["counts"]["validated"] == 0
     assert "no_statistically_validated_posting_rules" in report["analysis"]["reasons"]
     assert not report["remediation"]["production_ready"]

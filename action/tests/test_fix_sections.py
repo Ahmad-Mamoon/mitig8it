@@ -101,8 +101,8 @@ def test_a_single_region_fix_carries_a_hunk():
     assert section["verification_level"] == "development_unverified"
 
 
-def test_a_two_region_fix_keeps_one_hunk_and_carries_the_other():
-    """The App publishes the finding's region inline and the rest as extra hunks."""
+def test_a_two_region_fix_is_one_complete_verified_hunk():
+    """A click applies imports and the sink rewrite together, exactly as verified."""
     finding = {
         "fingerprint": "fp-1",
         "rule_id": "cwe-78.child-process-exec",
@@ -116,10 +116,12 @@ def test_a_two_region_fix_keeps_one_hunk_and_carries_the_other():
     )
     section = remediation.fix_sections(response, {"fp-1": finding})[0]
     assert section["not_suggestable_reason"] == ""
-    assert section["hunk"]["start_line"] == 5
-    assert "execFile(" in section["hunk"]["replacement_lines"][0]
-    assert len(section["extra_hunks"]) == 1
-    assert "require('child_process')" in "\n".join(section["extra_hunks"][0]["replacement_lines"])
+    assert section["hunk"]["start_line"] == 2
+    assert section["hunk"]["end_line"] == 5
+    replacement = "\n".join(section["hunk"]["replacement_lines"])
+    assert "require('child_process')" in replacement
+    assert "execFile(" in replacement
+    assert section["extra_hunks"] == []
 
 
 def test_a_fix_in_another_file_says_so_rather_than_suggesting_the_wrong_lines():

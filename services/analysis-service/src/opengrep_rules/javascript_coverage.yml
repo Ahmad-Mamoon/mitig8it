@@ -341,7 +341,12 @@ rules:
       analysis_scope: "taint-intraprocedural"
       source_description: "text returned by a language model call"
       sink_description: "eval or Function constructor"
-      posting: post
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
 
   - id: cwe-78.js-llm-output-shell
     mode: taint
@@ -379,7 +384,12 @@ rules:
       analysis_scope: "taint-intraprocedural"
       source_description: "text returned by a language model call"
       sink_description: "shell command"
-      posting: post
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
 
   - id: cwe-79.js-llm-output-html
     mode: taint
@@ -408,7 +418,12 @@ rules:
       analysis_scope: "taint-intraprocedural"
       source_description: "text returned by a language model call"
       sink_description: "HTML sink"
-      posting: post
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
 
   - id: cwe-89.js-llm-output-sql
     mode: taint
@@ -436,7 +451,12 @@ rules:
       analysis_scope: "taint-intraprocedural"
       source_description: "text returned by a language model call"
       sink_description: "SQL query text"
-      posting: post
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
 
 
   # ── Insecure deserialization ───────────────────────────────────────────
@@ -593,7 +613,12 @@ rules:
       internal_type: "path_traversal"
       family: "path_containment"
       confidence: "0.78"
-      posting: post
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
 
   - id: cwe-22.js-path-resolve-request-value
     patterns:
@@ -624,7 +649,12 @@ rules:
         and true (juice-shop routes/dataErasure.ts, the local file read challenge), precision 1.00.
         Written from that label, so this is in-sample; under the three adjudicated findings the
         posting policy asks for.
-      posting: post
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
 
   - id: cwe-22.js-render-request-object-locals
     patterns:
@@ -659,7 +689,12 @@ rules:
         true (juice-shop routes/dataErasure.ts lines 107 and 123, both branches of the local file
         read challenge spread `req.body` into the locals), precision 1.00. Written from the goof
         label, so in-sample.
-      posting: post
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
 
   # ── SSRF ───────────────────────────────────────────────────────────────
 
@@ -893,7 +928,12 @@ rules:
       internal_type: "weak_password_hash"
       family: "password_hashing"
       confidence: "0.88"
-      posting: post
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
 
   - id: cwe-327.js-ecb-cipher-mode
     patterns:
@@ -1280,7 +1320,12 @@ rules:
       precision_evidence: >-
         benchmarks/vulnerable-corpus 2026-09: 1 finding, adjudicated by label and true (dvna's
         `secure: false` session cookie), precision 1.00.
-      posting: post
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
 
   - id: cwe-1275.js-cookie-samesite-none
     patterns:

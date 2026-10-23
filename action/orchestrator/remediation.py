@@ -346,19 +346,17 @@ def _hunks_for_finding(
     """The App's `buildSections` decision, in its own order.
 
     A candidate that does not touch the finding's file cannot be a suggestion on it; one that
-    touches several files cannot be applied by a suggestion at all, because GitHub would commit
-    only the part inside this comment and that is not the change that was verified.
+    touches several files cannot be applied by a suggestion at all. For one file, the suggestion
+    spans every changed region so the click applies exactly what verification evaluated.
     """
     change = next((item for item in changes if str(item.get("path") or "") == path), None)
     if change is None:
         return None, [], "changes_other_file"
     if len(changes) > 1:
         return None, [], "multiple_files"
-    regions = inline_fixes.compute_regions(
+    hunk = inline_fixes.compute_hunk(
         change.get("original"), change.get("replacement"), finding_line
     )
-    if not regions:
+    if not hunk:
         return None, [], "no_line_change"
-    hunk = inline_fixes.primary_region(regions, finding_line)
-    extras = [region for region in regions if region is not hunk]
-    return hunk, extras, ""
+    return hunk, [], ""

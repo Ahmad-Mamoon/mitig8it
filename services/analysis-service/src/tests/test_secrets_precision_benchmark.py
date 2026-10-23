@@ -2,7 +2,8 @@
 
 `benchmarks/secrets-precision/cases.json` holds one true-positive fixture per key format and
 per entropy shape the detector claims, and every line the September 2026 measurement read by
-hand and judged wrong, including all nine entries of this repository's own `.gitleaksignore`.
+hand and judged wrong. Later `.gitleaksignore` security-fixture exemptions are replayed
+separately without assuming they are detector-negative examples.
 
 The gate exists because both halves of a precision claim decay silently. A format narrowed to
 remove a false positive stops matching its own key and nothing fails: the detector just goes
@@ -61,6 +62,27 @@ synthesize = _load_synthesizer()
 
 FINDING_CASES = [case for case in CASES if case["expect"] == "finding"]
 NO_FINDING_CASES = [case for case in CASES if case["expect"] == "no-finding"]
+# These later, already-reviewed gitleaks exemptions are not additional negative
+# labels. Replay their actual source: redaction fixtures deliberately contain
+# detectable credential shapes, which must not be trained out of the detector.
+ADDITIONAL_GITLEAKS_SOURCE_CASES = {
+    "benchmarks/results/e2e-successes-2026-10-13.md": {
+        "expected_types": set(),
+        "reason": "Historical generic-api-key matches in a synthetic benchmark narrative, not provider key formats.",
+    },
+    "benchmarks/rule-quality/legacy-posting.json": {
+        "expected_types": set(),
+        "reason": "Credential rule IDs map to definition digests, not credential values.",
+    },
+    "services/analysis-service/src/tests/test_llm_triage.py": {
+        "expected_types": set(),
+        "reason": "Prompt-redaction tests use explicitly synthetic short credential canaries.",
+    },
+    "services/remediation-service/tests/test_source_redaction.py": {
+        "expected_types": {"database_connection_string", "private_key_pem"},
+        "reason": "Synthetic redaction fixtures intentionally retain detectable URL/private-key shapes.",
+    },
+}
 GENERATED_KEY_FORMAT_CASES = [
     case
     for case in CASES
@@ -272,7 +294,9 @@ class TestSetIntegrity:
         By path, not by count. The idempotency key appears in five files and the
         `sk-live-abc123def456` fixture in two, and a count would have let a case stand in for a
         file it was never run against; the path is what decides scope, so each entry needs its
-        own case. Adding a line to `.gitleaksignore` without adding its case fails here.
+        own case. Later synthetic security-evaluation exemptions are covered by
+        explicit source-replay cases, not assumed to be negative labels. Adding a
+        path to `.gitleaksignore` without adding either kind of case fails here.
         """
         entries = {
             line.strip().split(":")[1]
@@ -282,8 +306,17 @@ class TestSetIntegrity:
         assert entries, "the known-false-positive set was not found"
         covered = {
             case["path"] for case in NO_FINDING_CASES if "gitleaksignore" in case["id"]
-        }
+        } | set(ADDITIONAL_GITLEAKS_SOURCE_CASES)
         assert entries - covered == set(), sorted(entries - covered)
+
+    @pytest.mark.parametrize("path", sorted(ADDITIONAL_GITLEAKS_SOURCE_CASES))
+    def test_additional_gitleaks_exemptions_replay_the_source_without_relabeling_secrets(self, path):
+        case = ADDITIONAL_GITLEAKS_SOURCE_CASES[path]
+        assert case["reason"]
+        lines = (REPOSITORY_ROOT / path).read_text(encoding="utf-8").splitlines()
+        patch = f"@@ -0,0 +1,{len(lines)} @@\n" + "\n".join("+" + line for line in lines)
+        actual = {match.secret_type for match in sd.secret_matches(path, patch)}
+        assert actual == case["expected_types"], path
 
 
 class TestTruePositivesStillFire:

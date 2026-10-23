@@ -287,7 +287,12 @@ rules:
       analysis_scope: "taint-intraprocedural"
       source_description: "text returned by a language model call"
       sink_description: "eval or exec"
-      posting: post
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
 
   - id: cwe-78.py-llm-output-shell
     mode: taint
@@ -317,7 +322,12 @@ rules:
       analysis_scope: "taint-intraprocedural"
       source_description: "text returned by a language model call"
       sink_description: "shell command"
-      posting: post
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
 
   - id: cwe-89.py-llm-output-sql
     mode: taint
@@ -345,7 +355,12 @@ rules:
       analysis_scope: "taint-intraprocedural"
       source_description: "text returned by a language model call"
       sink_description: "SQL query text"
-      posting: post
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
 
 
   # ── Server-side template injection ─────────────────────────────────────
@@ -650,7 +665,12 @@ rules:
         because the service merges it into the cwe-22.py-open-request-path finding already on that
         statement. Written from those two labels, so in-sample, and under the three adjudicated
         findings the posting policy asks for.
-      posting: post
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
 
   - id: cwe-22.py-pathlib-join-interpolated
     patterns:
@@ -741,7 +761,12 @@ rules:
       precision_evidence: >-
         benchmarks/vulnerable-corpus 2026-09: 3 findings over 2 repositories, all 3 adjudicated by
         label and true, precision 1.00.
-      posting: post
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
 
   - id: cwe-327.py-ecb-cipher-mode
     patterns:
@@ -1085,7 +1110,12 @@ rules:
       internal_type: "insecure_cookie_flags"
       family: "cookie_flags"
       confidence: "0.85"
-      posting: post
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
 
   - id: cwe-352.py-csrf-exempt
     patterns:

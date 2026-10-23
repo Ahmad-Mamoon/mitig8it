@@ -109,10 +109,6 @@
       "rule_digest": "71de683c877def42f5505723d5551c5b212ea1c2f2d69e202755a8e4885cdf66",
       "status": "legacy_unvalidated"
     },
-    "opengrep.cwe-22.js-archive-entry-write": {
-      "rule_digest": "bba77d8d9771c7458cf85ec3772c2122a118efe156e2333857dd11278a1d9afe",
-      "status": "legacy_unvalidated"
-    },
     "opengrep.cwe-22.js-fs-read-request-path": {
       "rule_digest": "2ff73cfd9a019f9068141a323d69606058ebc33c225720fb36c7b5428e126d04",
       "status": "legacy_unvalidated"
@@ -211,10 +207,6 @@
     },
     "opengrep.cwe-327.weak-crypto-java": {
       "rule_digest": "0c1782ba742b0bfd119de577c034998e516da55b41fb1e435e42885e0c9b710d",
-      "status": "legacy_unvalidated"
-    },
-    "opengrep.cwe-327.weak-hash-password": {
-      "rule_digest": "741d259854b37be4089e2447d2e4c0fea69c924bbe9c94799611870d00a6a468",
       "status": "legacy_unvalidated"
     },
     "opengrep.cwe-329.js-static-initialization-vector": {
@@ -355,18 +347,6 @@
     },
     "opengrep.cwe-613.js-jwt-ignore-expiration": {
       "rule_digest": "ec4bfd559f39b27526a4cc93f6eb1f893415ceaeeeb51c0d839ac61f1414ae6b",
-      "status": "legacy_unvalidated"
-    },
-    "opengrep.cwe-614.insecure-cookie": {
-      "rule_digest": "84f34e0d0d2a28472d5cb2c9855579f54f356ebe6d4751deafd44abdb771ac4e",
-      "status": "legacy_unvalidated"
-    },
-    "opengrep.cwe-614.js-session-cookie-insecure": {
-      "rule_digest": "43b2c5aa91873bde954396a14c1dbe70611da8f2e3f8e67a55480a1d77caa801",
-      "status": "legacy_unvalidated"
-    },
-    "opengrep.cwe-614.py-session-cookie-insecure": {
-      "rule_digest": "e78c3456f9d0d317f2aec499b0a49bbb98baaefeb84c5840777359206fd4f3e7",
       "status": "legacy_unvalidated"
     },
     "opengrep.cwe-693.js-helmet-protection-disabled": {
@@ -655,14 +635,6 @@
     },
     "opengrep.cwe-89.sql-template-literal": {
       "rule_digest": "cd2661d32b3326686d7608c34fd18ad8e4ab9204e15c6edde8b311f3b6190b56",
-      "status": "legacy_unvalidated"
-    },
-    "opengrep.cwe-916.js-password-weak-hash": {
-      "rule_digest": "19758d9dfbd8d2b6e87a70a0b3ee2ad52d1225689ca620d8fa76f629b3c62f62",
-      "status": "legacy_unvalidated"
-    },
-    "opengrep.cwe-916.py-password-weak-hash-usedforsecurity": {
-      "rule_digest": "47c4cc423b7b01912c28841fb1dbfeddf964ffd60635f265ef39c1c927a49da2",
       "status": "legacy_unvalidated"
     },
     "opengrep.cwe-918.js-fetch-request-url": {
