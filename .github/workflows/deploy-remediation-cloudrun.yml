@@ -217,9 +217,11 @@ jobs:
           DEPLOY_SHA=$(git rev-parse HEAD)
           SHORT="${DEPLOY_SHA:0:12}"
           REGISTRY="us-central1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}"
-          echo "DEPLOY_SHA=${DEPLOY_SHA}" >> "$GITHUB_ENV"
-          echo "IMAGE=${REGISTRY}/remediation:remediation-${SHORT}" >> "$GITHUB_ENV"
-          echo "JOB_IMAGE=${REGISTRY}/remediation-job:remediation-job-${SHORT}" >> "$GITHUB_ENV"
+          {
+            echo "DEPLOY_SHA=${DEPLOY_SHA}"
+            echo "IMAGE=${REGISTRY}/remediation:remediation-${SHORT}"
+            echo "JOB_IMAGE=${REGISTRY}/remediation-job:remediation-job-${SHORT}"
+          } >> "$GITHUB_ENV"
 
       - name: Build repair image
         run: |
@@ -543,10 +545,14 @@ jobs:
         shell: bash
         run: |
           if [ "${SANDBOX_DRIVER}" = "cloud_run_job" ]; then
-            echo "SANDBOX_DRIVER=cloud_run_job. Checks run in ${{ vars.SANDBOX_JOB_NAME }} at ${SANDBOX_IMAGE_DIGEST}." >> "$GITHUB_STEP_SUMMARY"
-            echo "Fresh signed baseline/candidate results and the immutable execution passed the release isolation smoke. Receipt retained as a workflow artifact." >> "$GITHUB_STEP_SUMMARY"
-            echo "Evidence is labelled isolated_job, with no read-only root filesystem and no gVisor runtime class." >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo "SANDBOX_DRIVER=cloud_run_job. Checks run in ${{ vars.SANDBOX_JOB_NAME }} at ${SANDBOX_IMAGE_DIGEST}."
+              echo "Fresh signed baseline/candidate results and the immutable execution passed the release isolation smoke. Receipt retained as a workflow artifact."
+              echo "Evidence is labelled isolated_job, with no read-only root filesystem and no gVisor runtime class."
+            } >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "SANDBOX_DRIVER=local. Repository checks run inside this service container with no isolation." >> "$GITHUB_STEP_SUMMARY"
-            echo "Every result is labelled development_unverified and satisfies no isolation gate." >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo "SANDBOX_DRIVER=local. Repository checks run inside this service container with no isolation."
+              echo "Every result is labelled development_unverified and satisfies no isolation gate."
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
