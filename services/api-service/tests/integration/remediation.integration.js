@@ -62,6 +62,7 @@ function resolve(scripted, payload, fallback) {
   if (typeof scripted === 'function') return scripted(payload);
   return scripted || fallback;
 }
+function sha256(text) { return crypto.createHash('sha256').update(text, 'utf8').digest('hex'); }
 githubRemediationClient.GitHubRemediationClient = class {
   async authorize(payload) {
     githubCalls.authorize += 1;
@@ -625,9 +626,14 @@ test('one automatic job is queued per head after analysis, it is claimable witho
     `INSERT INTO remediation_candidates (job_id,installation_id,repository_id,candidate_version,finding_snapshot_ids,artifact_digest,context_manifest_digest,file_manifest,preview,verification_level)
      VALUES ($1,$2,$3,1,$4,$5,$6,$7,$8,'independent_sandbox')`,
     [first.job_id, f.installation, f.repo, [open], 'a'.repeat(64), 'c'.repeat(64),
-      JSON.stringify({ verified_tree_oid: 'f'.repeat(40), files: [{ path: 'src/app.js', contents_base64: Buffer.from(fixed).toString('base64') }] }),
-      JSON.stringify({ changes: [{ path: 'src/app.js', original, replacement: fixed, unified_diff: '@@ -3 +3 @@\n-old\n+new' }], rationale: 'Parameterize the query.',
-        reasoning: { intended_behavior: 'Same row for the same id.' }, evidence: { status: 'passed', evidence_digest: 'e'.repeat(64), generated_tests: [{ path: 'tests/orders.regression.test.js' }], limitations: [] } })]
+      JSON.stringify({ verified_tree_oid: 'f'.repeat(40), files: [{ path: 'src/app.js', contents_base64: Buffer.from(fixed).toString('base64'), base_sha256: sha256(original), new_sha256: sha256(fixed) }] }),
+      JSON.stringify({ changes: [{ path: 'src/app.js', original, replacement: fixed, base_sha256: sha256(original), new_sha256: sha256(fixed), unified_diff: '@@ -3 +3 @@\n-old\n+new' }], rationale: 'Parameterize the query.',
+        reasoning: { intended_behavior: 'Same row for the same id.' }, evidence: { status: 'passed', verification_level: 'independent_sandbox', verified_tree_oid: 'f'.repeat(40), evidence_digest: 'e'.repeat(64), generated_tests: [{ path: 'tests/orders.regression.test.js' }], limitations: [] } })]
+  );
+  await workerQuery(
+    `INSERT INTO verification_runs (job_id,installation_id,repository_id,candidate_digest,original_tree_sha,candidate_tree_sha,base_sha,verifier_identity,policy_version,outcome,evidence_digest,coverage_gaps,limitations)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'integration-verifier','v1','passed',$8,'[]','[]')`,
+    [first.job_id, f.installation, f.repo, 'a'.repeat(64), f.head, 'f'.repeat(40), f.base, 'e'.repeat(64)]
   );
   await workerQuery(`UPDATE remediation_jobs SET state='ready', stage='ready', state_version=state_version+1 WHERE id=$1`, [first.job_id]);
   const readyJob = (await workerQuery('SELECT * FROM remediation_jobs WHERE id=$1', [first.job_id])).rows[0];
@@ -678,9 +684,14 @@ test('a second completed analysis on the same head reuses the ready job and repu
     `INSERT INTO remediation_candidates (job_id,installation_id,repository_id,candidate_version,finding_snapshot_ids,artifact_digest,context_manifest_digest,file_manifest,preview,verification_level)
      VALUES ($1,$2,$3,1,$4,$5,$6,$7,$8,'independent_sandbox')`,
     [queued.job_id, f.installation, f.repo, [open], 'a'.repeat(64), 'c'.repeat(64),
-      JSON.stringify({ verified_tree_oid: 'f'.repeat(40), files: [{ path: 'src/app.js', contents_base64: Buffer.from(fixed).toString('base64') }] }),
-      JSON.stringify({ changes: [{ path: 'src/app.js', original, replacement: fixed, unified_diff: '@@ -3 +3 @@\n-old\n+new' }],
-        reasoning: { intended_behavior: 'Same row for the same id.' }, evidence: { status: 'passed', limitations: [] } })]
+      JSON.stringify({ verified_tree_oid: 'f'.repeat(40), files: [{ path: 'src/app.js', contents_base64: Buffer.from(fixed).toString('base64'), base_sha256: sha256(original), new_sha256: sha256(fixed) }] }),
+      JSON.stringify({ changes: [{ path: 'src/app.js', original, replacement: fixed, base_sha256: sha256(original), new_sha256: sha256(fixed), unified_diff: '@@ -3 +3 @@\n-old\n+new' }],
+        reasoning: { intended_behavior: 'Same row for the same id.' }, evidence: { status: 'passed', verification_level: 'independent_sandbox', verified_tree_oid: 'f'.repeat(40), evidence_digest: 'e'.repeat(64), limitations: [] } })]
+  );
+  await workerQuery(
+    `INSERT INTO verification_runs (job_id,installation_id,repository_id,candidate_digest,original_tree_sha,candidate_tree_sha,base_sha,verifier_identity,policy_version,outcome,evidence_digest,coverage_gaps,limitations)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'integration-verifier','v1','passed',$8,'[]','[]')`,
+    [queued.job_id, f.installation, f.repo, 'a'.repeat(64), f.head, 'f'.repeat(40), f.base, 'e'.repeat(64)]
   );
   await workerQuery(`UPDATE remediation_jobs SET state='ready', stage='ready' WHERE id=$1`, [queued.job_id]);
 
