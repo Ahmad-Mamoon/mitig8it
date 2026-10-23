@@ -25,6 +25,9 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
+REPORT_SCHEMA_VERSION = 2
+SOURCE_FILES = ('llm_client.py', 'llm_triage.py', 'main.py', 'analysis_grpc_server.py',
+                'grpc/generated/analysis_pb2.py', 'grpc/generated/common_pb2.py')
 
 
 def now():
@@ -32,12 +35,34 @@ def now():
 
 
 def digest(value):
-    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+    return hashlib.sha256(json.dumps(value, sort_keys=True, allow_nan=False).encode()).hexdigest()
 
 
 def benchmark_rule_ids(cases):
     """Return synthetic IDs admitted only inside the local evaluation process."""
     return frozenset(str(case.get('finding', {}).get('rule_id') or '') for case in cases) - {''}
+
+
+def source_bindings(cases):
+    """Read local inputs only; no service import, provider call, or trust assertion."""
+    sources = {name: (ROOT/'services/analysis-service/src'/name).read_text() for name in SOURCE_FILES}
+    tree = ast.parse(sources['llm_triage.py'])
+    prompt = next(ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
+                  and any(isinstance(target, ast.Name) and target.id == 'SYSTEM_PROMPT' for target in node.targets))
+    return {'fixture_digest': digest(cases), 'prompt_digest': digest(prompt),
+            'source_digest': digest(sources), 'evaluator_digest': digest(Path(__file__).read_text())}
+
+
+def request_plan(cases, repeats, faults_only=False):
+    if type(repeats) is not int or repeats not in (1, 2) or type(faults_only) is not bool:
+        raise ValueError('invalid_request_plan')
+    ids = [case['id'] for case in cases]
+    if not ids or len(set(ids)) != len(ids) or len(ids) * repeats > 12:
+        raise ValueError('invalid_request_plan')
+    plan = [] if faults_only else [
+        {'case_id': case_id, 'mode': 'live', 'repeat': repeat}
+        for repeat in range(1, repeats + 1) for case_id in ids]
+    return plan + [{'case_id': ids[0], 'mode': mode, 'repeat': 1} for mode in ('timeout', 'malformed')]
 
 
 def save(path, report):
@@ -187,22 +212,93 @@ def summarize(rows):
                                'total': len(faults)}}
 
 
-def report_passed(report):
-    """Require every planned request and every pipeline stage to finish successfully."""
-    if report['summary']['live_cases'] != report['planned_live_requests']:
+def report_validation_errors(report, cases_path=HERE/'cases.json'):
+    """Reject incomplete, stale, or internally inconsistent smoke evidence.
+
+    This verifies reproducibility and scope, not authenticity or independent human review.
+    In particular, a locally editable report can never authorize production publication.
+    """
+    try:
+        if type(report.get('schema_version')) is not int or report['schema_version'] != REPORT_SCHEMA_VERSION:
+            return ['unsupported_or_legacy_report_schema']
+        suite = json.loads(cases_path.read_text())['cases']
+        ids = report['case_ids']
+        if (not isinstance(ids, list) or not ids or any(not isinstance(item, str) for item in ids)
+                or len(ids) != len(set(ids))):
+            return ['invalid_case_selection']
+        cases = [case for case in suite if case['id'] in ids]
+        if [case['id'] for case in cases] != ids:
+            return ['fixture_case_selection_mismatch']
+        plan = request_plan(cases, report['repeats'], report['faults_only'])
+        if report['planned_requests'] != plan:
+            return ['request_plan_mismatch']
+        expected_live = sum(item['mode'] == 'live' for item in plan)
+        if type(report['planned_live_requests']) is not int or report['planned_live_requests'] != expected_live:
+            return ['planned_live_request_count_mismatch']
+        expected_kind = 'fault_recovery_smoke' if report['faults_only'] else 'live_recommendation_smoke'
+        if report['results_kind'] != expected_kind:
+            return ['report_scope_mismatch']
+        errors = [key + '_mismatch' for key, value in source_bindings(cases).items() if report.get(key) != value]
+        if errors:
+            return errors
+        rows = report['rows']
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            return ['invalid_report_rows']
+        identities = [(row['mode'], row['case_id'], row['repeat']) for row in rows]
+        expected = {(item['mode'], item['case_id'], item['repeat']) for item in plan}
+        if (any(type(row['repeat']) is not int for row in rows)
+                or len(identities) != len(set(identities)) or set(identities) != expected):
+            return ['planned_rows_missing_duplicate_or_unexpected']
+        cases_by_id = {case['id']: case for case in cases}
+        for row in rows:
+            case = cases_by_id[row['case_id']]
+            if row.get('pipeline_completed') is not True or row.get('http_status') != 200:
+                return ['incomplete_pipeline']
+            if (type(row.get('elapsed_ms')) not in (int, float) or not math.isfinite(row['elapsed_ms'])
+                    or row['elapsed_ms'] < 0 or type(row.get('provider_calls')) is not int
+                    or row['provider_calls'] != 1):
+                return ['invalid_observation_counts']
+            if row.get('expected_verdict') != case['expected_verdict']:
+                return ['expected_verdict_mismatch']
+            verdict, advice, expected_scores = score(case, row['response'], row)
+            if 'transported_recommendation' not in row:
+                return ['transport_evidence_missing']
+            expected_scores['recommendation_transport'] = int(row['transported_recommendation'] == advice)
+            scores = row.get('scores')
+            if (not isinstance(scores, dict) or set(scores) != set(expected_scores)
+                    or any(type(value) is not int or value not in (0, 1) for value in scores.values())
+                    or scores != expected_scores or row.get('observed_verdict') != verdict):
+                return ['mandatory_metrics_missing_or_inconsistent']
+            replacement = row.get('replacement_validation')
+            if (not isinstance(replacement, dict)
+                    or digest(replacement) != digest(replacement_validation(case, row))):
+                return ['replacement_validation_missing_or_inconsistent']
+            if row['mode'] != 'live' and (row.get('injected_fault') != row['mode']
+                    or row.get('fault_exercised') is not True or row.get('fallback_preserved') is not True):
+                return ['unexercised_fault_or_missing_fallback']
+        if digest(report['summary']) != digest(summarize(rows)):
+            return ['summary_does_not_match_rows']
+        return []
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, StopIteration, RecursionError, SyntaxError):
+        return ['invalid_or_incomplete_report']
+
+
+def report_passed(report, cases_path=HERE/'cases.json'):
+    """Complete, current smoke agreement only; never a production accuracy claim."""
+    if report_validation_errors(report, cases_path):
         return False
-    for row in report['rows']:
-        if not row.get('pipeline_completed', False):
-            return False
-        if row['mode'] == 'live':
-            if row.get('replacement_validation', {}).get('status') == 'rejected':
-                return False
-            if not all(value == 1 for key, value in row.get('scores', {}).items()
-                       if key != 'fix_terms_heuristic'):
-                return False
-        elif not (row.get('fault_exercised', False) and row.get('fallback_preserved', False)):
-            return False
-    return True
+    return all(row['replacement_validation']['status'] != 'rejected'
+               and all(value == 1 for key, value in row['scores'].items() if key != 'fix_terms_heuristic')
+               for row in report['rows'] if row['mode'] == 'live')
+
+
+def verify_saved_report(report, cases_path=HERE/'cases.json'):
+    errors = report_validation_errors(report, cases_path)
+    if errors:
+        raise ValueError('saved_report_refused:' + ','.join(errors))
+    expected = 'passed' if report_passed(report, cases_path) else 'failed'
+    if report.get('evaluation_status') != expected:
+        raise ValueError('saved_report_status_mismatch')
 
 
 @contextmanager
@@ -239,6 +335,8 @@ def run_live(args):
     suite = json.loads(args.cases.read_text())
     cases = suite['cases']
     if args.case:
+        if not set(args.case).issubset({case['id'] for case in cases}):
+            raise ValueError('unknown_selected_case')
         cases = [c for c in cases if c['id'] in args.case]
     if not cases or len(cases) * args.repeats > 12:
         raise ValueError('select_between_1_and_12_live_requests')
@@ -250,11 +348,11 @@ def run_live(args):
               'LLM_API_KEY': key or 'local-fault-injection', 'LLM_BASE_URL': args.base_url, 'LLM_TRIAGE_ENABLED': 'true',
               'ANALYSIS_SERVICE_INTERNAL_SECRET': secret, 'OTEL_SDK_DISABLED': 'true',
               'LANGSMITH_TRACING': 'false', 'LANGCHAIN_TRACING': 'false', 'LANGCHAIN_TRACING_V2': 'false'}
-    report = {'schema_version': 1, 'evaluation_status': 'in_progress',
-              'model': args.model, 'results_kind': 'live_recommendation_smoke',
-              'fixture_digest': digest(cases), 'prompt_digest': digest(triage.SYSTEM_PROMPT),
-              'source_digest': digest({name: (ROOT/'services/analysis-service/src'/name).read_text()
-                                       for name in ['llm_client.py', 'llm_triage.py', 'main.py']}),
+    plan = request_plan(cases, args.repeats, args.faults_only)
+    report = {'schema_version': REPORT_SCHEMA_VERSION, 'evaluation_status': 'in_progress',
+              'model': args.model, 'results_kind': 'fault_recovery_smoke' if args.faults_only else 'live_recommendation_smoke',
+              **source_bindings(cases), 'case_ids': [case['id'] for case in cases],
+              'repeats': args.repeats, 'faults_only': args.faults_only, 'planned_requests': plan,
               'scope': 'local HTTP Tier 3 -> real model -> validation -> response -> gRPC serialization',
               'limitations': ['Curated synthetic cases, not production precision/recall.',
                              'Citation checks and keyword heuristics do not prove fix correctness.',
@@ -345,10 +443,8 @@ def run_live(args):
     # Admit them only while the isolated evaluator is running; never edit or bypass
     # the packaged production policy to make a benchmark pass.
     evaluation_rule_ids = benchmark_rule_ids(cases)
-    jobs = [(c, 'live', repeat) for repeat in range(1, args.repeats+1) for c in cases]
-    if args.faults_only:
-        jobs = []
-    jobs += [(cases[0], 'timeout', 1), (cases[0], 'malformed', 1)]
+    cases_by_id = {case['id']: case for case in cases}
+    jobs = [(cases_by_id[item['case_id']], item['mode'], item['repeat']) for item in plan]
     provider_broken = False
     with environment(values), \
          patch.object(analysis_main, 'PUBLICATION_RULE_IDS',
@@ -388,8 +484,8 @@ def run_live(args):
                     _parse_analysis_response(body).SerializeToString()))
                 wired_advice = next((f.get('evidence_details', {}).get('extra', {}).get('llm_recommendation')
                                     for f in decoded.get('findings', [])), None)
-                if advice:
-                    scores['recommendation_transport'] = int(wired_advice == advice)
+                current['transported_recommendation'] = wired_advice
+                scores['recommendation_transport'] = int(wired_advice == advice)
                 current.setdefault('stages', []).append({'name': 'transport', 'started_at': transport_start,
                     'ended_at': now(), 'elapsed_ms': round((time.perf_counter()-transport_clock)*1000, 2)})
                 if mode != 'live':
@@ -412,7 +508,7 @@ def run_live(args):
                              'scores','elapsed_ms','estimated_cost_usd','provider_error','provider_http_status']}), flush=True)
             if mode == 'live' and (current.get('provider_error') or current.get('budget_exhausted')):
                 provider_broken = True  # Still exercise the independent, unbilled fault checks.
-    passed = report_passed(report)
+    passed = report_passed(report, args.cases)
     report['evaluation_status'] = 'passed' if passed else 'failed'
     save(args.output, report)
     print(json.dumps({'evaluation_status': report['evaluation_status'], **report['summary']}, indent=2))
@@ -421,6 +517,9 @@ def run_live(args):
 
 def upload_saved(args, client=None):
     report = json.loads(args.upload_only.read_text())
+    # Validate before constructing an external client or modifying the saved report. Failed
+    # but complete/current experiments remain useful observations; stale/incomplete ones do not.
+    verify_saved_report(report, getattr(args, 'cases', HERE/'cases.json'))
     rows = report['rows']
     if not 1 <= len(rows) <= 14:
         raise ValueError('upload_case_limit')
@@ -506,6 +605,7 @@ def main():
     parser.add_argument('--max-cost', type=float, default=1.0)
     parser.add_argument('--repeats', type=int, default=2)
     parser.add_argument('--upload-only', type=Path)
+    parser.add_argument('--verify-only', type=Path, help='Validate a saved smoke report offline; never authorize production publication')
     parser.add_argument('--faults-only', action='store_true', help='Exercise timeout/malformed fallback without any provider request')
     parser.add_argument('--env-file', type=Path, help='Explicit opt-in to loading the existing development key allowlist')
     args = parser.parse_args()
@@ -519,6 +619,19 @@ def main():
 
 
 def execute(args, parser):
+    if args.verify_only:
+        if args.upload_only:
+            parser.error('--verify-only and --upload-only are mutually exclusive')
+        try:
+            report = json.loads(args.verify_only.read_text())
+            verify_saved_report(report, args.cases)
+        except (OSError, ValueError, TypeError) as error:
+            print(json.dumps({'saved_report_valid': False, 'reason': str(error) if isinstance(error, ValueError) else type(error).__name__}))
+            return 1
+        passed = report['evaluation_status'] == 'passed'
+        print(json.dumps({'saved_report_valid': True, 'smoke_passed': passed,
+                          'scope': 'local_smoke_only', 'production_ready': False}))
+        return 0 if passed else 1
     if args.upload_only:
         try:
             upload_saved(args)

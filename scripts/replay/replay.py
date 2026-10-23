@@ -54,6 +54,26 @@ SNAPSHOT_BATCH_MAX_BYTES = 1_500_000
 SNAPSHOT_TIMEOUT_SECONDS = 1800
 
 
+def requested_pull_requests(reader: GitHubReader, repo: str, numbers: list[int]) -> list[dict[str, Any]]:
+    """Resolve an explicit PR list, never a subset of the recent merged-PR page.
+
+    Use the same cached GET/retry path as other reads. Resolve the entire list
+    before starting work so a missing requested PR cannot silently shrink a run.
+    """
+    pulls = []
+    for number in numbers:
+        try:
+            pull = reader.get(f"repos/{repo}/pulls/{number}")
+        except (GitHubError, OSError, ValueError, KeyError, TypeError) as exc:
+            raise GitHubError(f"requested PR #{number} could not be fetched: {exc}") from exc
+        if not isinstance(pull, dict) or type(pull.get("number")) is not int or pull["number"] != number:
+            raise GitHubError(f"requested PR #{number} returned a malformed or mismatched pull request")
+        if not isinstance(pull.get("merged_at"), str) or not pull["merged_at"].strip():
+            raise GitHubError(f"requested PR #{number} is not a merged pull request")
+        pulls.append(pull)
+    return pulls
+
+
 def build_payload(reader: GitHubReader, repo: str, pull: dict[str, Any]) -> dict[str, Any]:
     number = int(pull["number"])
     head_sha = pull.get("merge_commit_sha") or (pull.get("head") or {}).get("sha") or ""
@@ -350,7 +370,7 @@ def run_pairs(results: list[Path], cache: SnapshotCache, timeout: int, python: s
     return {"mode": "pairs", "with_dependencies": with_dependencies, "totals": totals, "records": records}
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--repo", help="owner/name of a public repository")
     parser.add_argument("--prs", type=int, default=15, help="how many recent merged pull requests to replay")
@@ -359,7 +379,8 @@ def main() -> int:
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_SECONDS, help="per-PR wall clock, seconds")
     parser.add_argument("--python", default=sys.executable, help="interpreter used for the worker process")
     parser.add_argument("--refresh", action="store_true", help="ignore the cache and re-read GitHub")
-    parser.add_argument("--only-pr", type=int, action="append", help="replay only these pull request numbers")
+    parser.add_argument("--only-pr", type=int, action="append",
+                        help="fetch these exact merged PR numbers directly (repeatable; ignores --prs)")
     parser.add_argument("--snapshot", action="store_true",
                         help="analyse a whole repository tree at --ref instead of pull requests")
     parser.add_argument("--ref", help="snapshot mode: the full 40-character commit sha to pin")
@@ -379,7 +400,14 @@ def main() -> int:
                         help="pairs mode: install each repository's declared dependencies into its "
                              "pinned tree and let the sandbox workspace see them, the way "
                              "policy.install_dependencies does in the service")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.only_pr:
+        if args.snapshot or args.pairs:
+            parser.error("--only-pr cannot be combined with --snapshot or --pairs")
+        if any(number < 1 for number in args.only_pr):
+            parser.error("--only-pr requires positive pull request numbers")
+        if len(set(args.only_pr)) != len(args.only_pr):
+            parser.error("--only-pr contains duplicate pull request numbers")
 
     if args.include_quarantined:
         os.environ["REPLAY_INCLUDE_QUARANTINED"] = "1"
@@ -435,13 +463,12 @@ def main() -> int:
 
     reader = GitHubReader(Path(args.cache), refresh=args.refresh)
     try:
-        pulls = reader.merged_pull_requests(args.repo, args.prs)
+        pulls = (requested_pull_requests(reader, args.repo, args.only_pr) if args.only_pr
+                 else reader.merged_pull_requests(args.repo, args.prs))
     except GitHubError as exc:
-        print(f"{args.repo}: could not list pull requests: {exc}", file=sys.stderr)
+        print(f"{args.repo}: could not select pull requests: {exc}; no replay performed, output not updated",
+              file=sys.stderr)
         return 2
-    if args.only_pr:
-        wanted = set(args.only_pr)
-        pulls = [pull for pull in pulls if int(pull["number"]) in wanted]
 
     records: list[dict[str, Any]] = []
     for pull in pulls:
@@ -476,7 +503,8 @@ def main() -> int:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps({
         "repo": args.repo,
-        "requested_prs": args.prs,
+        "requested_prs": len(args.only_pr) if args.only_pr else args.prs,
+        **({"requested_pr_numbers": args.only_pr} if args.only_pr else {}),
         "replayed_prs": len(records),
         "github_calls": reader.calls,
         "github_cache_hits": reader.cache_hits,

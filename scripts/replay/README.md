@@ -18,6 +18,10 @@ PY=~/.pyenv/versions/3.11.6/bin/python
 # one repository, by pull request
 $PY scripts/replay/replay.py --repo expressjs/express --prs 15 --out results/expressjs-express.json
 
+# explicit merged PR numbers from a frozen collection list, including old PRs
+$PY scripts/replay/replay.py --repo expressjs/express --only-pr 123 --only-pr 456 \
+    --out results/expressjs-explicit-prs.json
+
 # one repository tree at a pinned commit, quarantined rules included so they stay measurable
 $PY scripts/replay/replay.py --snapshot --include-quarantined \
     --repo OWASP/NodeGoat --ref c5cb68a7084e4ae7dcc60e6a98768720a81841e8 \
@@ -52,7 +56,22 @@ authenticated `gh`. Nothing is written to GitHub: every call is `gh api --method
 
 Options: `--cache` (default `scripts/replay/.cache`), `--timeout` (per-PR wall clock,
 default 300s), `--python` (interpreter for the worker), `--refresh` (bypass the cache),
-`--only-pr N` (repeatable, to re-run one pull request while triaging).
+`--only-pr N` (repeatable, to fetch exact merged PR numbers directly).
+
+`--only-pr` preserves the supplied order and ignores `--prs`: it fetches
+`repos/<repo>/pulls/<number>` through the same disk cache, retry ceiling, and
+rate-limit backoff used by other GitHub reads. It never filters a recent-PR page,
+so an old requested PR cannot silently disappear as newer PRs merge. All requested
+PRs must resolve before any replay worker starts. An unavailable, malformed,
+mismatched, or unmerged PR exits 2 with the requested number; no replay is performed
+and `--out` is not updated (an existing report is preserved, not a successful new
+collection). Always check the exit status. Zero/negative or duplicate PR numbers,
+and combinations with `--snapshot` or `--pairs`, are rejected before reads.
+Explicit runs record both `requested_prs` and `requested_pr_numbers`.
+
+This freezes PR selection only. The report records the fetched source commit;
+the caller must separately pin/audit source and system/configuration identity,
+sampling, coverage, and adjudication provenance before claiming holdout evidence.
 
 ## What it does
 
