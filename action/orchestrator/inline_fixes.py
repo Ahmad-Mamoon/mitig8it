@@ -7,10 +7,10 @@ with "Shown as a diff: the fix cannot be expressed as a line replacement". The a
 `unified_diff` and never `hunk`, so every fix it has ever produced was a diff nobody could click,
 while `action/README.md` promised a suggestion block. The hunk is the whole difference.
 
-The geometry is the api-service's, not a new one. `computeRegions` and `primaryRegion` in
-services/api-service/src/services/remediationInlineFixes.js decide which contiguous regions of the
-original a replacement changes, which of them the finding's comment carries and which travel as
-extra hunks in comments of their own. They are ported line for line here rather than re-derived,
+The geometry is the api-service's, not a new one. `computeHunk` in
+services/api-service/src/services/remediationInlineFixes.js returns one complete contiguous
+replacement spanning every changed region in the verified file. It is ported line for line here
+rather than re-derived,
 because a second opinion about where a fix starts is a fix the App and the action would render
 differently on the same candidate. tests/test_inline_fix_parity.py executes the Node functions and
 compares them against these on the same inputs, so a change on either side fails the build.
@@ -184,6 +184,58 @@ def compute_regions(
     return merged
 
 
+def compute_hunk(
+    original: Any,
+    replacement: Any,
+    preferred_line: Any = None,
+) -> Optional[Dict[str, Any]]:
+    """One complete contiguous replacement spanning all changes in a verified file.
+
+    A direct port of the App's `computeHunk`. Keeping unchanged lines between distant edits is
+    intentional: one GitHub click must apply the exact repair that verification evaluated,
+    including imports and helpers, rather than a selected fragment of it.
+    """
+    before = split_lines(original)
+    after = split_lines(replacement)
+    prefix = 0
+    while prefix < len(before) and prefix < len(after) and before[prefix] == after[prefix]:
+        prefix += 1
+    suffix = 0
+    while (
+        suffix < len(before) - prefix
+        and suffix < len(after) - prefix
+        and before[len(before) - 1 - suffix] == after[len(after) - 1 - suffix]
+    ):
+        suffix += 1
+    start_line = prefix + 1
+    end_line = len(before) - suffix
+    replacement_lines = list(after[prefix : len(after) - suffix])
+    if end_line >= start_line:
+        return {
+            "start_line": start_line,
+            "end_line": end_line,
+            "original_lines": list(before[prefix : len(before) - suffix]),
+            "replacement_lines": replacement_lines,
+        }
+    if not replacement_lines or not before:
+        return None
+    previous = prefix
+    following = prefix + 1
+    if following <= len(before) and (_preferred(preferred_line) == following or previous < 1):
+        return {
+            "start_line": following,
+            "end_line": following,
+            "original_lines": [before[following - 1]],
+            "replacement_lines": [*replacement_lines, before[following - 1]],
+        }
+    return {
+        "start_line": previous,
+        "end_line": previous,
+        "original_lines": [before[previous - 1]],
+        "replacement_lines": [before[previous - 1], *replacement_lines],
+    }
+
+
 def evidence_lines(evidence: Dict[str, Any]) -> List[str]:
     """The `**Evidence:**` lines of a fix's details block, as `evidenceLines` builds them.
 
@@ -255,32 +307,3 @@ def proof_line(evidence: Dict[str, Any], finding: Dict[str, Any]) -> str:
         f"regression test {name} asserts that {asserted}; it failed on the original code and "
         "passed on the fix."
     )
-
-
-def primary_region(
-    regions: Sequence[Dict[str, Any]],
-    finding_line: Any,
-) -> Optional[Dict[str, Any]]:
-    """The region a finding's comment carries: the one on its line, else the nearest.
-
-    A port of `primaryRegion`. The JS throws on an empty list rather than returning null; the
-    caller here never has one, and None is returned instead of raising so a malformed candidate
-    cannot take down a review that is otherwise ready to publish.
-    """
-    if not regions:
-        return None
-    try:
-        line = int(finding_line)
-    except (TypeError, ValueError):
-        line = 0
-    for region in regions:
-        if region["start_line"] <= line <= region["end_line"]:
-            return region
-    best = None
-    best_distance = None
-    for region in regions:
-        distance = min(abs(region["start_line"] - line), abs(region["end_line"] - line))
-        if best_distance is None or distance < best_distance:
-            best = region
-            best_distance = distance
-    return best

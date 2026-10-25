@@ -2,6 +2,8 @@ const crypto = require('crypto');
 const express = require('express');
 const analysisRunsDb = require('../db/analysisRuns');
 const { notifyAnalysisQueued } = require('../services/prAnalysisOrchestrator');
+const { AnalysisGrpcClient } = require('../clients/analysisGrpcClient');
+const { GitHubGrpcClient } = require('../clients/githubGrpcClient');
 
 const router = express.Router();
 
@@ -32,6 +34,37 @@ router.post('/analysis-queue/tick', async (_req, res, next) => {
   } catch (error) {
     next(error);
   }
+});
+
+async function authenticatedHealthCheck(Client) {
+  const dependency = new Client();
+  try {
+    const response = await dependency.healthCheck();
+    if (response.status !== 'ok') {
+      throw new Error('Dependency did not report ok');
+    }
+    return 'ok';
+  } finally {
+    dependency.client?.close?.();
+  }
+}
+
+router.get('/dependencies', async (_req, res) => {
+  const [analysis, github] = await Promise.allSettled([
+    authenticatedHealthCheck(AnalysisGrpcClient),
+    authenticatedHealthCheck(GitHubGrpcClient),
+  ]);
+  const checks = {
+    analysis: analysis.status === 'fulfilled' ? analysis.value : 'error',
+    github: github.status === 'fulfilled' ? github.value : 'error',
+  };
+  const ok = Object.values(checks).every((status) => status === 'ok');
+
+  res.status(ok ? 200 : 503).json({
+    status: ok ? 'ok' : 'error',
+    service: 'mitig8it-api',
+    checks,
+  });
 });
 
 module.exports = router;

@@ -1,3 +1,5 @@
+const qualityRelease = require('../quality-release.json');
+
 const DEFAULT_POLICY = Object.freeze({
   version: 'remediation-v1-disabled', max_files: 5, max_changed_lines: 200,
   max_attempts: 3, max_tool_calls: 20, max_context_tokens: 32000,
@@ -9,18 +11,22 @@ const DEFAULT_POLICY = Object.freeze({
   // what lets a repository with no verification fixture still produce an applicable fix.
   require_generated_regression_test: true,
   run_repository_tests: false,
-  // The families the repair service can repair and prove: the three JavaScript families plus
-  // the two Python-only ones (hardcoded credentials moved to the environment, eval replaced
-  // by ast.literal_eval). REMEDIATION_ALLOWED_RULE_FAMILIES_JSON narrows or overrides this.
+  // The families the repair service can repair and prove, every one of them in both toolchains.
+  // REMEDIATION_ALLOWED_RULE_FAMILIES_JSON narrows or overrides this.
   //
   // `workflow_hardening` is listed so an operator can turn it off, not because it can ship: it
   // is the one family that verifies by static assertion rather than by a regression test, that
   // verification level is not implemented yet, and the repair service refuses every candidate of
   // the family by name until it is. Leaving the family out here would have hidden the refusal
   // behind a policy message that says something else.
+  //
+  // `password_hashing` repairs a fast digest of a password to a salted scrypt key and rewrites the
+  // module's own comparisons into a verifier; `cookie_flags` sets HttpOnly, Secure and
+  // SameSite=Lax on the options a cookie is already set with. Both are proven by execution in
+  // both toolchains.
   allowed_rule_families: Object.freeze([
     'sql_parameterization', 'command_arguments', 'path_containment', 'hardcoded_credential', 'code_injection_eval',
-    'workflow_hardening',
+    'workflow_hardening', 'password_hashing', 'cookie_flags',
   ]),
   repair_memory_expiry_days: 90,
   // The sandbox deadline for one verification, enforced by the broker across every
@@ -73,6 +79,7 @@ function getPolicy() {
     enabled: flagEnv('REMEDIATION_ENABLED'),
     generate_enabled: flagEnv('REMEDIATION_GENERATE_ENABLED'),
     publish_enabled: flagEnv('REMEDIATION_PUBLISH_ENABLED'),
+    release_evidence_ready: qualityRelease.schema_version === 'v1' && qualityRelease.remediation_release_verified === true,
     policy_version: process.env.REMEDIATION_POLICY_VERSION || DEFAULT_POLICY.version,
     sandbox_image_digest: sandboxImage,
     verification_checks: verificationChecks,
@@ -98,11 +105,11 @@ function capabilities() {
   const policy = getPolicy();
   return {
     generate: policy.enabled && policy.generate_enabled && policy.repair_service_configured,
-    publish: policy.enabled && policy.publish_enabled && policy.repair_service_configured,
+    publish: policy.enabled && policy.publish_enabled && policy.repair_service_configured && policy.release_evidence_ready,
     // Generation after analysis is only useful when the result can be published under
     // the findings, so it requires both flags and both dependencies.
     auto_generate: policy.enabled && policy.generate_enabled && policy.publish_enabled
-      && policy.repair_service_configured && policy.github_write_configured,
+      && policy.repair_service_configured && policy.github_write_configured && policy.release_evidence_ready,
   };
 }
 
@@ -117,9 +124,11 @@ function capabilityReasons() {
   };
   return {
     generate: reason(policy.generate_enabled, policy.repair_service_configured),
-    publish: reason(policy.publish_enabled, policy.repair_service_configured),
+    publish: reason(policy.publish_enabled, policy.repair_service_configured)
+      || (!policy.release_evidence_ready ? 'release_evidence_missing' : null),
     auto_generate: reason(policy.generate_enabled && policy.publish_enabled,
-      policy.repair_service_configured && policy.github_write_configured),
+      policy.repair_service_configured && policy.github_write_configured)
+      || (!policy.release_evidence_ready ? 'release_evidence_missing' : null),
   };
 }
 
@@ -130,9 +139,18 @@ function capabilityReport() {
   report.development_verification_allowed = allowDevelopmentVerification();
   report.isolated_job_verification_allowed = allowIsolatedJobVerification();
   report.static_assertion_verification_allowed = allowStaticAssertionVerification();
+  report.release_evidence_ready = getPolicy().release_evidence_ready;
   // Weakest first, so a consumer ranking or explaining levels reads the order from the report
   // rather than hard-coding one of its own.
   report.verification_levels = [...VERIFICATION_LEVEL_ORDER];
+  // A family this build can repair that the operator's policy leaves out. An explicit
+  // REMEDIATION_ALLOWED_RULE_FAMILIES_JSON is the operator's choice and is honoured, but a
+  // list written before a family existed silently disables it: workflow_hardening shipped
+  // switched off in production for exactly that reason, and the only symptom was a skip line
+  // on the pull request saying the family was disabled by policy. Reporting it turns a silent
+  // drift into something an operator can see.
+  report.rule_families_excluded_by_policy = DEFAULT_POLICY.allowed_rule_families
+    .filter((family) => !getPolicy().allowed_rule_families.includes(family));
   return report;
 }
 

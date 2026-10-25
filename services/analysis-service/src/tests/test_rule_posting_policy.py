@@ -27,6 +27,23 @@ from main import (
 from security_rules import POSTING_QUARANTINE, SECURITY_RULES
 
 
+def detector_quarantine() -> set:
+    """The quarantined ids the two non-rule detectors declare beside their own signals.
+
+    `secret_detection.POSTING` and `dependency_diff.POSTING` are declarations in the same sense a
+    rule's `posting:` key is, so the one set is the union of four sources, not two.
+    """
+    from dependency_diff import POSTING as DEPENDENCY_DIFF_POSTING
+    from secret_detection import POSTING as SECRET_POSTING
+
+    return {
+        rule_id
+        for table in (SECRET_POSTING, DEPENDENCY_DIFF_POSTING)
+        for rule_id, posting in table.items()
+        if posting == POSTING_QUARANTINE
+    }
+
+
 def _finding(rule_id: str, line: int = 1) -> dict:
     return {
         "rule_id": rule_id,
@@ -48,6 +65,7 @@ def _finding(rule_id: str, line: int = 1) -> dict:
 @pytest.fixture
 def quarantine(monkeypatch):
     monkeypatch.setattr(main, "QUARANTINED_RULE_IDS", frozenset({"opengrep.noisy.rule"}))
+    monkeypatch.setattr(main, "PUBLICATION_RULE_IDS", main.PUBLICATION_RULE_IDS | {"opengrep.good.rule"})
 
 
 class TestQuarantineSet:
@@ -67,7 +85,7 @@ class TestQuarantineSet:
         from opengrep_runner import quarantined_rule_ids
 
         tier1 = {rule.rule_id for rule in SECURITY_RULES if rule.posting == POSTING_QUARANTINE}
-        assert QUARANTINED_RULE_IDS == frozenset(tier1 | set(quarantined_rule_ids()))
+        assert QUARANTINED_RULE_IDS == frozenset(tier1 | set(quarantined_rule_ids()) | detector_quarantine())
 
     def test_at_least_one_rule_is_quarantined_so_the_path_is_exercised(self):
         assert QUARANTINED_RULE_IDS
@@ -96,6 +114,7 @@ class TestPartition:
         monkeypatch.setattr(
             main, "QUARANTINED_RULE_IDS", frozenset({"opengrep.noisy.rule", "authz.missing_function_level"})
         )
+        monkeypatch.setattr(main, "PUBLICATION_RULE_IDS", main.PUBLICATION_RULE_IDS | {"null.pointer.deref"})
         postable, quarantined = partition_by_posting_policy(
             [_finding("authz.missing_function_level"), _finding("null.pointer.deref", 2)]
         )
@@ -105,9 +124,9 @@ class TestPartition:
     def test_an_empty_list_is_handled(self):
         assert partition_by_posting_policy([]) == ([], [])
 
-    def test_a_finding_without_a_rule_id_is_still_posted(self):
+    def test_a_finding_without_a_rule_id_is_withheld(self):
         postable, quarantined = partition_by_posting_policy([{"file_path": "a.ts"}])
-        assert len(postable) == 1 and quarantined == []
+        assert postable == [] and len(quarantined) == 1
 
     def test_counts_are_grouped_by_rule(self):
         counts = quarantined_counts_by_rule(
@@ -179,6 +198,7 @@ class TestEndpointsReportTheWithheld:
 
     def test_a_quarantined_tier2_finding_does_not_reach_the_response(self, monkeypatch):
         monkeypatch.setattr(main, "QUARANTINED_RULE_IDS", frozenset({"opengrep.noisy.rule"}))
+        monkeypatch.setattr(main, "PUBLICATION_RULE_IDS", main.PUBLICATION_RULE_IDS | {"opengrep.good.rule"})
         monkeypatch.setattr(
             main,
             "run_opengrep_with_limitations",
@@ -195,7 +215,7 @@ class TestLoadedPolicy:
         from security_rules import POSTING_QUARANTINE, SECURITY_RULES
 
         tier1 = {rule.rule_id for rule in SECURITY_RULES if rule.posting == POSTING_QUARANTINE}
-        assert main.QUARANTINED_RULE_IDS == frozenset(quarantined_rule_ids()) | tier1
+        assert main.QUARANTINED_RULE_IDS == frozenset(quarantined_rule_ids()) | tier1 | detector_quarantine()
 
     def test_at_least_one_rule_is_quarantined_so_the_path_is_exercised(self):
         assert main.QUARANTINED_RULE_IDS

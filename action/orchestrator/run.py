@@ -25,6 +25,16 @@ from . import analysis, github_api, pr_scope, repo_config
 CHECK_RUN_NAME = "Mitig8it Security Review"
 FAIL_ON_CHOICES = ("none", "high", "critical")
 
+
+def fix_publication_ready() -> bool:
+    root = Path(os.environ.get("MITIG8IT_GITHUB_SERVICE_ROOT")
+                or Path(__file__).resolve().parents[2] / "services/github-service")
+    try:
+        release = json.loads((root / "src/quality-release.json").read_text(encoding="utf-8"))
+        return release.get("schema_version") == "v1" and release.get("remediation_release_verified") is True
+    except (OSError, ValueError, AttributeError):
+        return False
+
 # A workflow that grants write access to file contents has handed the action the power to change
 # the code it is reviewing. The action does not want it and will not run with it, because the
 # claim that it cannot alter your repository has to be enforced rather than promised.
@@ -50,6 +60,51 @@ REFUSED_PERMISSION_MESSAGE = (
 
 class ActionError(Exception):
     """A condition the run cannot continue past, reported without a traceback."""
+
+
+# --- what produced this review ---------------------------------------------------------------
+#
+# A bug report used to have to name a date. The trial's own defects were filed as "the review on
+# the 24th said X", which is unanswerable once main has moved: nothing on the pull request said
+# which code reviewed it. Every review now carries the version, in the check run summary and in
+# one line of the review body, and the composition happens here so that one string reaches both.
+#
+# `action.yml` supplies the four variables. They are deliberately about what happened rather than
+# what was intended: a released ref whose image pull failed reports `source`, because a review that
+# came out of a local build must not claim to be the published image.
+
+UNRELEASED_LABEL = "unreleased"
+
+
+def version_identity(environ: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """The version line a review carries, and the parts it was built from.
+
+    `label` is what a user is asked to quote. It is `v1.0.0` on a released ref that ran the
+    published image, and it says so plainly when it is anything else, because "v1.0.0" on a run
+    that built its own image from a branch would send a bug report to the wrong code.
+    """
+    env = os.environ if environ is None else environ
+    version = (env.get("MITIG8IT_ACTION_VERSION") or "").strip()
+    digest = (env.get("MITIG8IT_ACTION_IMAGE_DIGEST") or "").strip()
+    source = (env.get("MITIG8IT_ACTION_SOURCE") or "").strip().lower()
+    ref = (env.get("MITIG8IT_ACTION_REF") or "").strip()
+
+    if version and source == "registry":
+        label = f"v{version}"
+    elif version:
+        label = f"v{version} (built from source, not the released image)"
+    elif ref:
+        label = f"{UNRELEASED_LABEL} ({ref}, built from source)"
+    else:
+        label = f"{UNRELEASED_LABEL} (local checkout, built from source)"
+
+    return {
+        "label": label,
+        "version": version,
+        "digest": digest,
+        "source": source or "source",
+        "ref": ref,
+    }
 
 
 def input_value(name: str, default: str = "") -> str:
@@ -257,17 +312,22 @@ def thread_summary_line(threads: Optional[Dict[str, Any]]) -> str:
     `minimized` is gone and `retired` and `kept` are in its place. A minimized thread is still an
     unresolved conversation, so the trial's fixed finding left the pull request blocked; the
     action deletes its own stale comment now instead, and keeps the one carrying a published fix.
+
+    `marked fixed` is the comment of a fix that was applied: the finding has gone and the
+    comment, kept, now says so instead of still offering the suggestion. `kept` is one that was
+    already in that form, or one the publisher could not rewrite and left as it was.
     """
     if not isinstance(threads, dict):
         return "Review threads: the publisher reported no reconciliation."
     numbers = {
         key: int(threads.get(key) or 0)
-        for key in ("seen", "ours", "resolved", "retired", "kept", "failed")
+        for key in ("seen", "ours", "resolved", "retired", "applied", "kept", "failed")
     }
     line = (
         f"Review threads: {numbers['seen']} seen, {numbers['ours']} with our marker, "
         f"{numbers['resolved']} resolved, {numbers['retired']} retired, "
-        f"{numbers['kept']} kept for a published fix, {numbers['failed']} failed."
+        f"{numbers['applied']} marked fixed, {numbers['kept']} kept for a published fix, "
+        f"{numbers['failed']} failed."
     )
     unavailable = str(threads.get("unavailable") or "")
     if unavailable:
@@ -460,6 +520,7 @@ def build_publish_request(
     active_fingerprints: Sequence[str] = (),
     bot_login: str = "github-actions[bot]",
     action_id: Optional[str] = None,
+    version_label: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Everything the Node publisher needs, in one place the tests can build without a network."""
     action_id = action_id or f"action-{uuid.uuid4().hex[:16]}"
@@ -480,6 +541,10 @@ def build_publish_request(
         "findings": findings,
         "fixes": len(fix_sections),
         "modelConfigured": model_configured,
+        # One string, composed once here, rendered by the publisher in two places. The publisher
+        # derives nothing of its own from it, the same rule `counts` follows, so a check summary
+        # and a review body can never name two different versions of the same run.
+        "versionLabel": version_label or version_identity()["label"],
         "failConclusion": conclusion,
         "excludedFiles": int(excluded_files),
         # What the review looked at, split into analysed, excluded and skipped. The check
@@ -556,6 +621,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 
 def _run() -> int:
+    # First line of every log, so a run that fails before it publishes still says what it was.
+    identity = version_identity()
+    log(f"Mitig8it {identity['label']}.")
+    if identity["digest"]:
+        log(f"Image {identity['digest']}.")
+
     token = input_value("github-token") or os.environ.get("GITHUB_TOKEN", "")
     if not token:
         raise ActionError("no github-token was provided")
@@ -634,7 +705,10 @@ def _run() -> int:
     )
 
     fix_sections: List[Dict[str, Any]] = []
-    if post_fixes and findings:
+    fixes_withheld = post_fixes and bool(findings) and not fix_publication_ready()
+    if fixes_withheld:
+        log("Fix publication withheld: independent release evidence is missing.")
+    if post_fixes and findings and not fixes_withheld:
         fix_sections = generate_fixes(
             reader=reader,
             repository=repository,
@@ -681,9 +755,12 @@ def _run() -> int:
         # posts under a different login, and github-service recognises its own comment by that
         # login. Assuming it meant every re-run created a second comment instead of editing.
         bot_login=reader.viewer_login(),
+        version_label=identity["label"],
     )
 
     log("Publishing.")
+    if fixes_withheld:
+        request["fixesWithheldReason"] = "independent_release_evidence_missing"
     results = run_publisher(request)
     errors = results.get("errors") or []
     for error in errors:
@@ -716,11 +793,19 @@ def _run() -> int:
         f"{counts['high']} high, {plural(len(fix_sections), 'fix suggestion')}.\n\n"
         + (f"{exclusion_line}.\n\n" if exclusion_line else "")
         + (
-            "Fixes were generated with model assistance.\n"
-            if model_configured
-            else "No model key was configured, so only template fixes were produced and "
-            "nothing left this runner.\n"
+            "Fix suggestions were withheld because independent release evidence is missing.\n"
+            if fixes_withheld else (
+                "Fixes were generated with model assistance.\n"
+                if model_configured
+                else "No model key was configured, so only template fixes were produced and "
+                "nothing left this runner.\n"
+            )
         )
+        # The job summary is where a maintainer looks when a run went wrong, so it carries the
+        # digest as well as the label. The review body carries only the label, because a
+        # sixty-four character hex string in a pull request comment is noise.
+        + f"\nMitig8it {identity['label']}."
+        + (f" Image `{identity['digest']}`.\n" if identity["digest"] else "\n")
     )
 
     if conclusion == "failure":

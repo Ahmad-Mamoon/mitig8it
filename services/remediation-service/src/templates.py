@@ -17,8 +17,10 @@ from typing import Any, Callable
 from .families import (
     CODE_INJECTION_EVAL,
     COMMAND_ARGUMENTS,
+    COOKIE_FLAGS,
     HARDCODED_CREDENTIAL,
     JAVASCRIPT,
+    PASSWORD_HASHING,
     PATH_CONTAINMENT,
     PYTHON,
     SQL_PARAMETERIZATION,
@@ -32,14 +34,17 @@ from .retrieval import Snapshot
 from .sites import (
     JS_CALLBACK_PARAMETERS,
     JS_EVAL_ARGUMENT_RE,
+    cookie_site,
     JsFunction,
     JsRoute,
     ModuleScope,
+    PasswordHashSite,
     PyFunction,
     SiteError,
     js_bound_names,
     js_environment_name,
     js_eval_site,
+    password_hash_site,
     js_literal_assignment,
     js_literal_assignment_in_span,
     js_names_in,
@@ -833,6 +838,7 @@ _PLACEHOLDERS: dict[str, Callable[[int], str]] = {
     "mysql.connector": lambda n: "%s",
     "asyncpg": lambda n: f"${n}",
     "sqlalchemy": lambda n: f":p{n}",
+    "django.db": lambda n: "%s",
 }
 
 
@@ -1070,13 +1076,24 @@ def _py_traversal(snapshot: Snapshot, finding: FindingSnapshot, function: PyFunc
 
 # --- GitHub Actions workflows ---------------------------------------------------------------
 #
-# Two shapes, and only two, because only two are unambiguous.
+# Four shapes, and only four, because only four are unambiguous: a mutable action reference, an
+# interpolation inside a `run:` script, an `actions/checkout` of the pull request's revision under
+# a privileged trigger, and a write grant under `pull_request_target`.
 #
-# Everything else the workflow rules find is a design decision rather than an edit. Moving a
-# build out of `pull_request_target` changes which revision CI runs; dropping a write scope
-# changes what the job can do; replacing a self-hosted runner changes where it runs. A patch
-# cannot make those choices for a maintainer, so those findings carry the explanation and no
-# candidate.
+# The last two were design decisions until the rules that report them were narrowed to the point
+# where the edit is the whole answer. `cwe-829.gha-pwn-request-checkout` only fires on a `ref:`
+# that is an input to `actions/checkout`, so pointing it at the base revision (or removing it)
+# is exactly the change GitHub's own advisory gives. `cwe-732.gha-write-grant-on-pull-request-target`
+# only fires on three grants under the one trigger a stranger can fire, and dropping the grant is
+# the repair its message asks for. The wider rules those two narrow keep no template, because
+# what they report is not always a checkout or not always unwanted.
+#
+# Everything else the workflow rules find is still a design decision rather than an edit. Moving
+# a build out of `pull_request_target` changes which revision CI runs; replacing a self-hosted
+# runner changes where it runs; an artifact that is executed belongs in the other workflow; a
+# script piped from a URL needs a pinned install whose shape depends on how the tool is published.
+# A patch cannot make those choices for a maintainer, so those findings carry the explanation and
+# no candidate.
 
 # `uses: owner/repo@ref`, with the leading list dash and surrounding quotes optional, and any
 # trailing comment kept so a version note survives the rewrite.
@@ -1089,6 +1106,30 @@ _FULL_DIGEST_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 # The interpolations the workflow injection rule reports, as they appear in a script.
 _GHA_EXPRESSION_RE = re.compile(r"\$\{\{(?P<body>[^}]*?)\}\}")
 _GHA_FIELD_RE = re.compile(r"(?:github|inputs|needs|steps|env|vars|matrix)(?:\.[\w-]+|\[[^\]]*\])+")
+
+# The rule ids whose findings these templates repair, by the fragment of the id that names them.
+PWN_REQUEST_RULE = "gha-pwn-request-checkout"
+WRITE_GRANT_RULE = "gha-write-grant-on-pull-request-target"
+
+# A trigger key, at the indentation the rules match it at. The same approximation as the rules,
+# and deliberately so: the repair has to decide which trigger the finding was reported under,
+# and deciding it differently from the rule would repair a workflow the rule did not mean.
+_PULL_REQUEST_TARGET_RE = re.compile(r"^[ \t]{0,4}pull_request_target[ \t]*:", re.M)
+_WORKFLOW_RUN_RE = re.compile(r"^[ \t]{0,4}workflow_run[ \t]*:", re.M)
+_CHECKOUT_USES_RE = re.compile(r"^[ \t]*(?:-[ \t]+)?uses[ \t]*:[ \t]*['\"]?actions/checkout@")
+_REF_LINE_RE = re.compile(r"^(?P<prefix>[ \t]*ref[ \t]*:[ \t]*)(?P<value>[^#]*?)(?P<tail>[ \t]+#.*)?[ \t]*$")
+# The values the pwn request rule reports, copied from its pattern.
+_UNTRUSTED_REF_RE = re.compile(
+    r"\$\{\{[ \t]*github\.event\.pull_request\.(?:head\.(?:sha|ref)|merge_commit_sha)"
+    r"|\$\{\{[ \t]*github\.event\.workflow_run\.head_(?:sha|branch)"
+    r"|\$\{\{[ \t]*github\.head_ref"
+    r"|refs/pull/"
+)
+BASE_REVISION = "${{ github.event.pull_request.base.sha }}"
+_WRITE_ALL_RE = re.compile(r"^(?P<indent>[ \t]*)permissions[ \t]*:[ \t]*(?P<quote>['\"]?)write-all(?P=quote)(?P<tail>[ \t]*(?:#.*)?)$")
+_SCOPE_WRITE_RE = re.compile(r"^(?P<indent>[ \t]*)(?P<scope>contents|id-token)[ \t]*:[ \t]*(?P<quote>['\"]?)write(?P=quote)(?P<tail>[ \t]*(?:#.*)?)$")
+_PERMISSIONS_KEY_RE = re.compile(r"^(?P<indent>[ \t]*)permissions[ \t]*:[ \t]*(?:#.*)?$")
+_WITH_KEY_RE = re.compile(r"^[ \t]*(?:-[ \t]+)?with[ \t]*:[ \t]*(?:#.*)?$")
 
 ACTION_DIGEST_UNRESOLVED = "action_digest_unresolved"
 WORKFLOW_NOT_A_WORKFLOW = "not_a_workflow_path"
@@ -1231,13 +1272,189 @@ def _workflow_env_binding(snapshot: Snapshot, finding: FindingSnapshot, step: Wo
     )
 
 
+def _workflow_rule_ids(finding: FindingSnapshot) -> list[str]:
+    """The finding's own rule id and every rule the clusterer merged into it, lower-cased.
+
+    The pwn request rule and the wider checkout rule match the same line and share an internal
+    type, so they arrive as one finding whose surviving `rule_id` depends on the clusterer. The
+    union travels in `evidence_details.extra.merged_rule_ids`, and that is what decides whether the
+    narrower rule saw this line.
+    """
+    ids = [str(finding.rule_id or "").lower()]
+    merged = _finding_extra(finding).get("merged_rule_ids")
+    if isinstance(merged, list):
+        ids.extend(str(item or "").lower() for item in merged)
+    return ids
+
+
+def _leading(text: str) -> int:
+    return len(text) - len(text.lstrip(" \t"))
+
+
+def _parent_index(lines: list[str], index: int) -> int | None:
+    """The 0-based index of the nearest line above `index` indented less than it, or None."""
+    indent = _leading(lines[index])
+    for candidate in range(index - 1, -1, -1):
+        text = lines[candidate]
+        if not text.strip() or text.lstrip().startswith("#"):
+            continue
+        if _leading(text) < indent:
+            return candidate
+    return None
+
+
+def _has_sibling_key(lines: list[str], parent: int, index: int) -> bool:
+    """Whether the block under `parent` has a key other than the one on line `index`."""
+    indent = _leading(lines[index])
+    for candidate in range(parent + 1, len(lines)):
+        text = lines[candidate]
+        if not text.strip() or text.lstrip().startswith("#"):
+            continue
+        if _leading(text) < indent:
+            break
+        if candidate != index and _leading(text) == indent:
+            return True
+    return False
+
+
+def _workflow_checkout_base_revision(snapshot: Snapshot, finding: FindingSnapshot) -> TemplatePatch:
+    """Point a privileged checkout at the base revision, or let it take the default branch.
+
+    Under `pull_request_target` the base revision is `github.event.pull_request.base.sha`, which
+    is the commit the workflow itself was read from, so the job checks out code the repository
+    already trusts. Under `workflow_run` there is no pull request in the event, so the `ref:` line
+    is removed and the checkout falls back to the default branch. A workflow that declares both
+    triggers gets the removal, because the base revision expression is empty under the second.
+
+    Either way the job no longer has the contributor's revision on disk. Whatever it did with
+    that revision (a preview build, a test run, a label from a file in the branch) now happens on
+    the base, and that is the intended change: the job keeps its secrets and loses the stranger's
+    code, which is what GitHub's own advice for this trigger says to do.
+    """
+    path = finding.affected_path
+    line = _finding_line(finding)
+    content = snapshot.full_content(path)
+    lines = content.split("\n")
+    if line > len(lines):
+        raise TemplateError("workflow_line_out_of_range")
+    original = lines[line - 1]
+    match = _REF_LINE_RE.match(original)
+    if not match or not _UNTRUSTED_REF_RE.search(match.group("value")):
+        raise TemplateError("untrusted_ref_not_found")
+    # The rule asks for the checkout step, and so does the repair: the same `ref:` under any other
+    # action means something else, which is the google/slo-generator false positive.
+    step = workflow_step_for_line(content, line)
+    if not any(_CHECKOUT_USES_RE.match(text) for text in lines[step.start_line - 1 : step.end_line]):
+        raise TemplateError("ref_not_under_checkout")
+
+    target = bool(_PULL_REQUEST_TARGET_RE.search(content))
+    workflow_run = bool(_WORKFLOW_RUN_RE.search(content))
+    if not target and not workflow_run:
+        raise TemplateError("privileged_trigger_not_found")
+
+    if target and not workflow_run:
+        value = match.group("value").strip()
+        quote = value[0] if value[:1] in {"'", '"'} and value[-1:] == value[:1] else ""
+        replacement = f"{match.group('prefix')}{quote}{BASE_REVISION}{quote}{match.group('tail') or ''}"
+        return TemplatePatch(
+            finding.stable_id,
+            WORKFLOW_HARDENING,
+            [_hunk(path, finding.stable_id, line, [original], [replacement])],
+            "actions/checkout pointed at the pull request's base revision instead of its head",
+        )
+
+    # `workflow_run`: the line goes. If it was the only input under `with:`, the `with:` goes too,
+    # because an empty `with:` is a null mapping and Actions rejects it.
+    parent = _parent_index(lines, line - 1)
+    if parent is not None and _WITH_KEY_RE.match(lines[parent]) and not _has_sibling_key(lines, parent, line - 1):
+        if lines[parent].lstrip().startswith("-"):
+            # `- with:` opens the step; removing it would remove the step's list item.
+            raise TemplateError("checkout_with_opens_the_step")
+        start = parent + 1
+        removed = lines[parent : line]
+    else:
+        start = line
+        removed = [original]
+    return TemplatePatch(
+        finding.stable_id,
+        WORKFLOW_HARDENING,
+        [_hunk(path, finding.stable_id, start, removed, [])],
+        "the ref: input removed, so actions/checkout takes the default branch rather than the triggering run's head",
+    )
+
+
+def _workflow_drop_write_grant(snapshot: Snapshot, finding: FindingSnapshot) -> TemplatePatch:
+    """Remove the write half of a grant under `pull_request_target`.
+
+    `write-all` becomes `read-all`, `contents: write` becomes `contents: read`, and `id-token:
+    write` is deleted, because `id-token` has no read level. If that leaves the `permissions:`
+    block empty it becomes `permissions: {}`, which grants nothing, rather than a bare key, which
+    YAML reads as null and Actions rejects.
+
+    This can break the job, and that is said in the description rather than hidden: a step that
+    pushed a branch or minted a cloud credential will now fail. The rule is quarantined on exactly
+    that observation (each job it was measured on used the scope it asked for), so this template
+    is what a re-enabled rule would ship, not what ships today.
+    """
+    path = finding.affected_path
+    line = _finding_line(finding)
+    lines = snapshot.full_content(path).split("\n")
+    if line > len(lines):
+        raise TemplateError("workflow_line_out_of_range")
+    original = lines[line - 1]
+    description = (
+        "the write grant removed from a pull_request_target workflow; a step that needed it will "
+        "now fail, and whether that step belongs under this trigger is the maintainer's call"
+    )
+
+    write_all = _WRITE_ALL_RE.match(original)
+    if write_all:
+        replacement = f"{write_all.group('indent')}permissions: read-all{write_all.group('tail') or ''}"
+        return TemplatePatch(
+            finding.stable_id, WORKFLOW_HARDENING, [_hunk(path, finding.stable_id, line, [original], [replacement])], description
+        )
+
+    scope = _SCOPE_WRITE_RE.match(original)
+    if not scope:
+        raise TemplateError("write_grant_not_found")
+    parent = _parent_index(lines, line - 1)
+    if parent is None or not _PERMISSIONS_KEY_RE.match(lines[parent]):
+        raise TemplateError("write_grant_not_under_permissions")
+
+    if scope.group("scope") == "contents":
+        replacement = f"{scope.group('indent')}contents: read{scope.group('tail') or ''}"
+        return TemplatePatch(
+            finding.stable_id, WORKFLOW_HARDENING, [_hunk(path, finding.stable_id, line, [original], [replacement])], description
+        )
+
+    if _has_sibling_key(lines, parent, line - 1):
+        return TemplatePatch(
+            finding.stable_id, WORKFLOW_HARDENING, [_hunk(path, finding.stable_id, line, [original], [])], description
+        )
+    indent = _PERMISSIONS_KEY_RE.match(lines[parent]).group("indent")
+    return TemplatePatch(
+        finding.stable_id,
+        WORKFLOW_HARDENING,
+        [_hunk(path, finding.stable_id, parent + 1, lines[parent : line], [f"{indent}permissions: {{}}"])],
+        description,
+    )
+
+
 def _workflow(snapshot: Snapshot, finding: FindingSnapshot) -> TemplatePatch:
-    """Dispatch on which of the two repairable shapes this finding is."""
+    """Dispatch on which of the four repairable shapes this finding is."""
     path = finding.affected_path
     if not is_workflow_path(path):
         raise TemplateError(WORKFLOW_NOT_A_WORKFLOW)
     rule = str(finding.rule_id or "").lower()
     internal_type = str(getattr(finding, "internal_type", "") or "").lower()
+    rule_ids = _workflow_rule_ids(finding)
+    # By rule id and never by internal type: the pwn request rule shares `untrusted_code_checkout`
+    # with the wider checkout rule and the write grant rule shares `excessive_workflow_permissions`
+    # with two others, and neither template is right for what those report.
+    if any(PWN_REQUEST_RULE in item for item in rule_ids):
+        return _workflow_checkout_base_revision(snapshot, finding)
+    if any(WRITE_GRANT_RULE in item for item in rule_ids):
+        return _workflow_drop_write_grant(snapshot, finding)
     if "unpinned-action" in rule or internal_type == "unpinned_action_reference":
         return _workflow_pin_action(snapshot, finding)
     if "run-untrusted-interpolation" in rule or internal_type == "workflow_script_injection":
@@ -1245,6 +1462,143 @@ def _workflow(snapshot: Snapshot, finding: FindingSnapshot) -> TemplatePatch:
         return _workflow_env_binding(snapshot, finding, step)
     # Every other workflow finding is a design decision, not an edit.
     raise TemplateError("workflow_shape_not_templated")
+
+
+# --- password hashing -----------------------------------------------------------------------
+#
+# The stored format becomes `scrypt$<16-byte salt hex>$<32-byte key hex>`, 104 characters: the
+# salt travels with the hash, so the verifier needs nothing but the stored string. scrypt is in both standard
+# libraries (Node `crypto.scryptSync`, Python `hashlib.scrypt`), so the repair adds no
+# dependency, and its default cost (N=2^14, r=8, p=1) is the one both document.
+#
+# What the repair cannot do is convert digests already stored: they no longer verify, so the
+# description says so, and a maintainer applies it knowing those accounts need a reset.
+
+PASSWORD_MIGRATION_NOTE = (
+    "digests stored before this change no longer verify and need a password reset, and the stored "
+    "value is now 104 characters"
+)
+
+
+def _rewrite_comparisons(path: str, finding_id: str, lines: list[str], site: PasswordHashSite, negate: str) -> list[dict[str, Any]]:
+    by_line: dict[int, list[Any]] = {}
+    for comparison in site.comparisons:
+        by_line.setdefault(comparison.line, []).append(comparison)
+    changes = []
+    for number, items in sorted(by_line.items()):
+        text = lines[number - 1]
+        rewritten = text
+        for comparison in sorted(items, key=lambda item: item.start, reverse=True):
+            call = f"{site.verifier}({comparison.password}, {comparison.stored})"
+            rewritten = rewritten[: comparison.start] + (negate + call if comparison.negated else call) + rewritten[comparison.end :]
+        changes.append(_hunk(path, finding_id, number, [text], [rewritten]))
+    return changes
+
+
+def _js_password(snapshot: Snapshot, finding: FindingSnapshot) -> TemplatePatch:
+    """A fast digest of a password becomes `crypto.scryptSync` with a random per-call salt."""
+    path = finding.affected_path
+    lines = snapshot.full_content(path).splitlines()
+    site = password_hash_site(snapshot, finding, JAVASCRIPT)
+    c, p, i, b = site.module, site.parameter, site.indent, site.body_indent
+    body = [
+        f"{b}const salt = {c}.randomBytes(16).toString('hex');",
+        f"{b}return ['scrypt', salt, {c}.scryptSync({p}, salt, 32).toString('hex')].join('$');",
+    ]
+    if site.arrow:
+        declaration = lines[site.start_line - 1]
+        head = declaration[: declaration.index("=>") + 2]
+        function = [f"{head} {{", *body, f"{i}}};"]
+    else:
+        function = [lines[site.start_line - 1], *body, lines[site.end_line - 1]]
+    signature = f"{p}: string, stored: string): boolean" if site.typescript else f"{p}, stored)"
+    verifier = [
+        "",
+        f"{i}function {site.verifier}({signature} {{",
+        f"{b}const [scheme, salt, expected] = String(stored).split('$');",
+        f"{b}if (scheme !== 'scrypt' || !salt || !expected) return false;",
+        f"{b}const actual = {c}.scryptSync({p}, salt, 32);",
+        f"{b}const wanted = Buffer.from(expected, 'hex');",
+        f"{b}return wanted.length === actual.length && {c}.timingSafeEqual(actual, wanted);",
+        f"{i}}}",
+    ]
+    original = lines[site.start_line - 1 : site.end_line]
+    changes = [_hunk(path, finding.stable_id, site.start_line, original, function + verifier)]
+    changes += _rewrite_comparisons(path, finding.stable_id, lines, site, "!")
+    return TemplatePatch(
+        finding.stable_id, PASSWORD_HASHING, sorted(changes, key=lambda change: change["start_line"]),
+        f"{site.function} derives a salted scrypt key instead of a {site.algorithm} digest, and each comparison "
+        f"calls {site.verifier}; {PASSWORD_MIGRATION_NOTE}",
+    )
+
+
+def _py_password(snapshot: Snapshot, finding: FindingSnapshot) -> TemplatePatch:
+    """The Python counterpart: `hashlib.scrypt` with an `os.urandom` salt, verified with hmac."""
+    path = finding.affected_path
+    source = snapshot.full_content(path)
+    lines = source.splitlines()
+    site = password_hash_site(snapshot, finding, PYTHON)
+    h, p, a, i, b = site.module, site.parameter, site.argument, site.indent, site.body_indent
+    cost = "n=2**14, r=8, p=1, dklen=32"
+    function = [
+        *site.keep_lines,
+        f"{b}salt = os.urandom(16)",
+        f"{b}digest = {h}.scrypt({a}, salt=salt, {cost})",
+        f'{b}return "scrypt$" + salt.hex() + "$" + digest.hex()',
+        "",
+        "",
+        f"{i}def {site.verifier}({p}, stored):",
+        f'{b}scheme, _, rest = str(stored).partition("$")',
+        f'{b}salt, _, expected = rest.partition("$")',
+        f'{b}if scheme != "scrypt" or not salt or not expected:',
+        f"{b}    return False",
+        f"{b}try:",
+        f"{b}    digest = {h}.scrypt({a}, salt=bytes.fromhex(salt), {cost})",
+        f"{b}except ValueError:",
+        f"{b}    return False",
+        f"{b}return hmac.compare_digest(digest.hex(), expected)",
+    ]
+    original = lines[site.start_line - 1 : site.end_line]
+    changes = [_hunk(path, finding.stable_id, site.start_line, original, function)]
+    changes += _rewrite_comparisons(path, finding.stable_id, lines, site, "not ")
+    if site.imports_needed:
+        line, after = python_import_anchor(source, site.start_line)
+        anchor = lines[line - 1]
+        added = [f"import {module}" for module in sorted(site.imports_needed)]
+        if line in {change["start_line"] for change in changes}:
+            raise TemplateError("import_anchor_overlaps_repair")
+        changes.append(_hunk(path, finding.stable_id, line, [anchor], [anchor, *added] if after else [*added, anchor]))
+    return TemplatePatch(
+        finding.stable_id, PASSWORD_HASHING, sorted(changes, key=lambda change: change["start_line"]),
+        f"{site.function} derives a salted scrypt key instead of a {site.algorithm} digest, and each comparison "
+        f"calls {site.verifier}; {PASSWORD_MIGRATION_NOTE}",
+    )
+
+
+# --- cookie flags ---------------------------------------------------------------------------
+
+def _cookie(snapshot: Snapshot, finding: FindingSnapshot, language: str) -> TemplatePatch:
+    """HttpOnly, Secure and SameSite=Lax on the options the code already passes, other keys kept.
+
+    Lax rather than Strict, because Strict withholds the cookie on every top-level navigation
+    from another site, so a user arriving from a link is signed out; Lax still withholds it from
+    the cross-site POSTs and subresource requests CSRF depends on.
+    """
+    site = cookie_site(snapshot, finding, language)
+    if list(site.original) == list(site.replacement):
+        raise TemplateError("cookie_flags_already_set")
+    path = finding.affected_path
+    if site.kind in ("setting", "flask_config"):
+        description = f"{site.name} set to True"
+    elif language == PYTHON:
+        description = 'set_cookie with secure=True, httponly=True and samesite="Lax"'
+    else:
+        description = f"{site.kind} cookie options with httpOnly: true, secure: true and sameSite: 'lax'"
+    return TemplatePatch(
+        finding.stable_id, COOKIE_FLAGS,
+        [_hunk(path, finding.stable_id, site.start_line, list(site.original), list(site.replacement))],
+        description + "; a cookie marked Secure is no longer sent over plain HTTP, so a development server without TLS stops keeping the session",
+    )
 
 
 # --- entry points ---------------------------------------------------------------------------
@@ -1264,6 +1618,10 @@ def generate_template(snapshot: Snapshot, finding: FindingSnapshot, family: str,
                 return _js_credential(snapshot, finding)
             if family == CODE_INJECTION_EVAL:
                 return _js_eval(snapshot, finding)
+            if family == PASSWORD_HASHING:
+                return _js_password(snapshot, finding)
+            if family == COOKIE_FLAGS:
+                return _cookie(snapshot, finding, JAVASCRIPT)
             if family == COMMAND_ARGUMENTS:
                 # The rewrite replaces one call in place, so it needs no enclosing scope.
                 return _js_command(snapshot, finding)
@@ -1275,6 +1633,10 @@ def generate_template(snapshot: Snapshot, finding: FindingSnapshot, family: str,
         elif language == PYTHON:
             if family == HARDCODED_CREDENTIAL:
                 return _py_credential(snapshot, finding)
+            if family == PASSWORD_HASHING:
+                return _py_password(snapshot, finding)
+            if family == COOKIE_FLAGS:
+                return _cookie(snapshot, finding, PYTHON)
             function = python_site_for_line(snapshot.full_content(path), _finding_line(finding))
             if family == SQL_PARAMETERIZATION:
                 return _py_sql(snapshot, finding, function)

@@ -15,7 +15,9 @@ from pathlib import PurePosixPath
 from .families import (
     CODE_INJECTION_EVAL,
     COMMAND_ARGUMENTS,
+    COOKIE_FLAGS,
     JAVASCRIPT,
+    PASSWORD_HASHING,
     PYTHON,
     SQL_PARAMETERIZATION,
     STATIC_ASSERTION,
@@ -24,6 +26,7 @@ from .families import (
 )
 from .models import FindingSnapshot
 from .retrieval import Snapshot
+from .sites import SiteError, cookie_site, password_hash_site
 from .verification.verifier import STATIC_ASSERTION_VERIFICATION_LEVEL, VERIFICATION_LEVELS
 
 UNSUPPORTED_LANGUAGE_MESSAGE = (
@@ -36,8 +39,14 @@ SHELL_PIPELINE_MESSAGE = (
 )
 AMBIGUOUS_QUERY_API_MESSAGE = (
     "The query is handed to a helper whose placeholder syntax the snapshot does not show: no "
-    "sqlite3, psycopg, or SQLAlchemy execute() call takes it at the finding, so a parameterized "
+    "sqlite3, psycopg, SQLAlchemy, or Django connection execute() call takes it at the finding, so a parameterized "
     "rewrite cannot be chosen safely."
+)
+MODEL_AUTHORED_COMMAND_MESSAGE = (
+    "The command is the text a language model returned, so the model decides which program runs. "
+    "An argument list would only move that decision from the shell to the program name: the fix "
+    "is to map the model's answer onto an allowlist of commands, which needs a design decision "
+    "this change does not make."
 )
 STATIC_ASSERTION_UNAVAILABLE_MESSAGE = (
     "This repair can only be shown to work by static assertion -- the rule fires on the file "
@@ -53,8 +62,34 @@ DYNAMIC_CODE_MESSAGE = (
     "a rewrite."
 )
 
+PASSWORD_LOOKUP_MESSAGE = (
+    "The password digest is looked up in a store rather than compared, and a salted hash is "
+    "different every time it is computed, so no lookup by it can ever match. Repairing it means "
+    "fetching the account by its identifier and verifying the stored hash, which changes the "
+    "query and the schema, not one function."
+)
+PASSWORD_OTHER_MODULE_MESSAGE = (
+    "Another module calls this hashing function, and the repair changes what it returns. Those "
+    "callers would compare a salted hash with a fresh one and reject every password, so the "
+    "change is not made from this file alone."
+)
+# A site refusal that is a property of the code, not of what the template recognizes: no
+# repair of the hashing function alone is safe here, written by a template or a model.
+PASSWORD_GATE_REFUSALS = {
+    "password_hash_used_for_lookup": PASSWORD_LOOKUP_MESSAGE,
+    "password_hash_called_from_other_module": PASSWORD_OTHER_MODULE_MESSAGE,
+}
+
+COOKIE_SAMESITE_NONE_MESSAGE = (
+    "The cookie is set with SameSite=None, which is how a cookie is made to travel on cross-site "
+    "requests on purpose, for an embed or a cross-site sign-in. Setting it to Lax would break that "
+    "flow rather than repair it, so whether the cookie should be cross-site at all is a design "
+    "decision this change does not make."
+)
+
 # Python database APIs whose placeholder syntax the Python harness knows and the prompt names.
-PYTHON_SQL_DRIVERS = ("sqlite3", "psycopg2", "psycopg", "sqlalchemy", "pymysql", "MySQLdb", "mysql.connector", "aiosqlite", "asyncpg")
+# `django.db` is Django's raw-SQL API: `connection.cursor().execute(sql, params)` takes `%s`.
+PYTHON_SQL_DRIVERS = ("sqlite3", "psycopg2", "psycopg", "sqlalchemy", "pymysql", "MySQLdb", "mysql.connector", "aiosqlite", "asyncpg", "django.db")
 _PYTHON_IMPORT_RE = re.compile(r"^[ \t]*(?:from[ \t]+([\w.]+)[ \t]+import\b|import[ \t]+([\w.]+(?:[ \t]*,[ \t]*[\w.]+)*))", re.MULTILINE)
 _PYTHON_EXECUTE_RE = re.compile(r"\.(?:execute|executemany|executescript|exec_driver_sql)\s*\(|\btext\s*\(")
 # A process call that hands a command line to a shell: `exec` and `execSync` always do, and
@@ -226,6 +261,21 @@ def python_shell_pipeline(snapshot: Snapshot, finding: FindingSnapshot) -> bool:
     return False
 
 
+def model_authored_command(finding: FindingSnapshot) -> bool:
+    """A command whose source is a language model's answer: the `*-llm-output-shell` rules.
+
+    The rule is the only thing that knows the tainted value is the whole answer rather than one
+    argument inside a literal command, so the decision is read from it, as the workflow family is.
+    The generic command rules match the same line, and the clusterer may keep one of them as the
+    finding's `rule_id`; the model rule then survives only in `evidence_details.extra.merged_rule_ids`.
+    """
+    details = getattr(finding, "evidence_details", None) or {}
+    details = details if isinstance(details, dict) else {}
+    extra = details.get("extra") if isinstance(details.get("extra"), dict) else {}
+    merged = extra.get("merged_rule_ids") if isinstance(extra.get("merged_rule_ids"), list) else []
+    return any("llm-output-shell" in str(rule_id or "") for rule_id in [finding.rule_id, *merged])
+
+
 def static_assertion_level_available() -> bool:
     """Whether the verification level the workflow family needs has landed.
 
@@ -243,10 +293,24 @@ def static_gate(snapshot: Snapshot, finding: FindingSnapshot, family: str, langu
         # proof it could ever have. Publishing it anyway would put an unverified patch in front of
         # a maintainer under the same review as verified ones, so it is refused by name instead.
         return "static_assertion_verification_unavailable", STATIC_ASSERTION_UNAVAILABLE_MESSAGE
+    if family == COMMAND_ARGUMENTS and model_authored_command(finding):
+        return "model_authored_command", MODEL_AUTHORED_COMMAND_MESSAGE
     if language == WORKFLOW:
         # Nothing below applies: a workflow has no package manifest, no shell call and no
         # compiled string. The only gate it has is the one above.
         return None
+    if family == PASSWORD_HASHING:
+        try:
+            password_hash_site(snapshot, finding, language)
+        except SiteError as exc:
+            if exc.code in PASSWORD_GATE_REFUSALS:
+                return exc.code, PASSWORD_GATE_REFUSALS[exc.code]
+    if family == COOKIE_FLAGS:
+        try:
+            cookie_site(snapshot, finding, language)
+        except SiteError as exc:
+            if exc.code == "cookie_samesite_none_is_deliberate":
+                return exc.code, COOKIE_SAMESITE_NONE_MESSAGE
     if language == JAVASCRIPT:
         if family == SQL_PARAMETERIZATION and not pg_dependency_proven(snapshot):
             return "pg_dependency_not_proven", PG_NOT_PROVEN_MESSAGE

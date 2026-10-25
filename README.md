@@ -3,6 +3,8 @@
 [![CI](https://github.com/aicodesentry/mitig8it/actions/workflows/ci.yml/badge.svg)](https://github.com/aicodesentry/mitig8it/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
+Built and maintained by [Neha Chaudhari](https://github.com/nebullii).
+
 Mitig8it reviews every pull request for exploitable code and posts the fix underneath the finding,
 as a suggestion you commit in one click.
 
@@ -31,7 +33,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: aicodesentry/mitig8it/action@main
+      # `v1` is the released major; it only ever moves forward within 1.x.
+      # A digest pin is stronger, because a tag can be moved and a digest cannot:
+      #   gh api repos/aicodesentry/mitig8it/commits/v1 --jq .sha
+      # then use that sha as the ref, keeping `# v1` in a trailing comment.
+      - uses: aicodesentry/mitig8it/action@v1
 ```
 
 That is the whole installation, and to remove it you delete the file. It runs in your own runner
@@ -104,9 +110,14 @@ Why the proof exists, what it establishes and what it does not:
   candidate is `development_unverified` and every comment says "development sandbox". The isolated
   job is written and not yet proven to run. A statically asserted candidate is weaker still: it
   executed nothing, and its comment says so instead of claiming a test result.
-- **JavaScript, TypeScript and Python only**, plus 16 template extensions for tier 2. Five repair
-  families: `sql_parameterization`, `command_arguments`, `path_containment`,
-  `hardcoded_credential`, `code_injection_eval`.
+- **Detection and repair cover different languages, and the difference is the point.** Tier 2
+  reads JavaScript, TypeScript, Python, Java, Go, Ruby, PHP and C#, plus 16 template extensions
+  and GitHub Actions workflows; JavaScript and Python carry most of the rules and the other five
+  carry a smaller set each. Repair is narrower on purpose, because a fix has to be shown to be a
+  fix: five families on JavaScript and Python (`sql_parameterization`, `command_arguments`,
+  `path_containment`, `hardcoded_credential`, `code_injection_eval`), and `workflow_hardening` on
+  workflows. A finding in a language with no repair family still posts; it says no automatic fix
+  is offered and why.
 - **Informational findings are not posted**, and a finding on a line the pull request did not touch
   has nowhere to go: GitHub rejects an inline comment there. In the ten-repository trial that was
   28 of 93 findings, counted in the summary and visible nowhere else. It is a defect and it is
@@ -144,6 +155,8 @@ the command that reproduces it.
 | `scripts/replay/` | The harness that replays real pull requests. |
 | `docs/validation/` | Every measurement, with the run that produced it. |
 | `docs/history/` | Dated reviews, kept as written and not maintained. |
+| `CHANGELOG.md` | What each release contains. |
+| `docs/releasing.md` | What a version promises, how a release is cut, and the Marketplace answer. |
 
 A fuller description of each component and its interfaces is in
 [docs/reference/system-overview.md](docs/reference/system-overview.md).

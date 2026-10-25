@@ -21,6 +21,13 @@ scanner parses; the tier 1 rules are regular expressions over text. Neither eval
 
 **Determinism.** Given the same rule id, path and two file contents, the returned match sets are
 the same. Line numbers are the file's own, so a caller can compare them against a finding's line.
+
+**An answer or an error, never an empty answer.** A rule that could not be evaluated never comes
+back looking like a rule that was evaluated and matched nothing, because that shape is the thing
+the assertion claims. A rule no tier declares and a rule the path is out of scope for come back
+as a named `refusal`; a process that has no scanner raises `ScannerUnavailableError`, which the
+endpoint returns as a 503 rather than as match sets. `scanner_available` lets a caller ask before
+it offers itself as an oracle.
 """
 from __future__ import annotations
 
@@ -33,14 +40,16 @@ import yaml
 from finding_quality import pattern_match_lines, rule_scan_options, whole_file_patch
 from opengrep_runner import (
     RULES_DIR,
+    ScannerUnavailableError,
     _build_finding,
     _rule_documents,
     _run_semgrep,
     canonical_check_id,
     contained_scan_path,
+    scanner_available,
 )
 from security_rules import SECURITY_RULES
-from test_code_scope import SUPPORTED_EXTENSIONS, is_analyzable_path
+from test_code_scope import is_analyzable_path, is_tier2_scannable_path
 
 # The sentence the evidence has to carry, in these words, wherever a static assertion is
 # recorded or rendered. Clause 5 of the contract is a claim about what did not happen, and a
@@ -54,6 +63,12 @@ TIER2 = "tier2"
 # caller is told which of these it got, and refuses the candidate.
 RULE_UNKNOWN = "rule_not_recognized"
 RULE_NOT_APPLICABLE = "rule_not_applicable_to_path"
+
+
+# The third way a rule can fail to be evaluated, and the only one that is not a property of the
+# rule or the path: this process has no scanner. `ScannerUnavailableError` and `scanner_available`
+# are imported above rather than used only internally, because the remediation service reaches
+# this module as an object and asks it both questions through these two names.
 
 MAX_ASSERTION_FILE_BYTES = 2_000_000
 MAX_MATCHES_PER_FILE = 500
@@ -122,7 +137,7 @@ def tier2_all_matches(path: str, content: str, *, rule_id: Optional[str] = None)
     already established from `rule_tier` whether the rule that produced the finding is a tier 2
     rule at all.
     """
-    if not is_analyzable_path(path) or Path(path).suffix.lower() not in SUPPORTED_EXTENSIONS:
+    if not tier2_scannable(path):
         return []
     config: Optional[str] = None
     with tempfile.TemporaryDirectory(prefix="mitig8it_assert_") as workdir:
@@ -200,4 +215,11 @@ def match_sets(rule_id: str, path: str, original: str, patched: str) -> Dict[str
 
 
 def tier2_scannable(path: str) -> bool:
-    return is_analyzable_path(path) and Path(path).suffix.lower() in SUPPORTED_EXTENSIONS
+    """The same answer `run_opengrep` gates the scanner on, so an assertion runs where detection did.
+
+    It used to be an extension check, which left out the one tier 2 scope that is a path rather
+    than an extension: `.github/workflows/*.yml`. Every workflow rule was therefore refused as
+    `rule_not_applicable`, and the `workflow_hardening` family, the only family that declares
+    this level, could not have a single repair asserted.
+    """
+    return is_analyzable_path(path) and is_tier2_scannable_path(path)

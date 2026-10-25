@@ -55,8 +55,8 @@ async function getAppliedMigrations(client) {
   return new Map(result.rows.map((row) => [row.version, row.checksum]));
 }
 
-async function planMigrations(client, migrationsDir = MIGRATIONS_DIR) {
-  await ensureMigrationsTable(client);
+async function planMigrations(client, migrationsDir = MIGRATIONS_DIR, { createLedger = true } = {}) {
+  if (createLedger) await ensureMigrationsTable(client);
   const files = listMigrationFiles(migrationsDir);
   const applied = await getAppliedMigrations(client);
 
@@ -81,14 +81,15 @@ async function planMigrations(client, migrationsDir = MIGRATIONS_DIR) {
 async function getPendingMigrations(migrationsDir = MIGRATIONS_DIR) {
   const client = await pool.connect();
   try {
-    return await planMigrations(client, migrationsDir);
+    // Runtime credentials can read the ledger but must never issue DDL.
+    return await planMigrations(client, migrationsDir, { createLedger: false });
   } finally {
     client.release();
   }
 }
 
-async function applyMigrations(migrationsDir = MIGRATIONS_DIR) {
-  const client = await pool.connect();
+async function applyMigrations(migrationsDir = MIGRATIONS_DIR, migrationPool = pool) {
+  const client = await migrationPool.connect();
   const applied = [];
   let lockAcquired = false;
 

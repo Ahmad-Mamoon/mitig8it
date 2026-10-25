@@ -43,10 +43,6 @@ function normalizeDismissalReason(reason, fallback = 'other') {
   return REASON_ALIASES.get(key) || fallback;
 }
 
-function isDismissalReason(reason) {
-  return DISMISSAL_REASONS.includes(String(reason || '').trim().toLowerCase());
-}
-
 const INSERT_SQL = `
   INSERT INTO finding_outcomes (
     installation_id, repository_id, pull_request_id, finding_id, fingerprint, rule_id,
@@ -172,7 +168,6 @@ module.exports = {
   recordOutcome,
   recordOutcomesForFindings,
   normalizeDismissalReason,
-  isDismissalReason,
   identityOf,
   OUTCOMES,
   SOURCES,

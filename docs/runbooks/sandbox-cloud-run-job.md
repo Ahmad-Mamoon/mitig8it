@@ -25,14 +25,16 @@ mechanism behind it.
 Whether an unprivileged user namespace can be created depends on the sandbox the platform runs
 the container in, and that is not something this repository can assert from outside. It has been
 observed unavailable under a restrictive seccomp profile: building the job image locally and
-running one task body inside it reports `network_namespace: "unavailable"`, and the internet
-probe then comes back `reached: true`, because only the cleared resolver is left. The driver
-refuses that evidence, which is correct, but it means the feature is inert rather than unsafe.
+running one task body inside it reports `network_namespace: "unavailable"`. The task now
+refuses the repository command before running probes or repository code, with
+`sandbox_network_namespace_unavailable` and null probe measurements. A failed namespace
+control never falls back to running the command on the container's original network.
 
 So step 4 has two possible outcomes, and both are information:
 
-* probes all `false` and `network_namespace: "applied"`: the level can be claimed, continue;
-* any probe `true` or `null`: stop at step 4. Do not flip the driver. The service keeps
+* a completed smoke command with exit 0, probes all `false`, and `network_namespace: "applied"`:
+  the level can be claimed, continue;
+* an unavailable namespace or any probe `true` or `null`: stop at step 4. Do not flip the driver. The service keeps
   producing honest `development_unverified` evidence, which is what it produced before.
 
 Running step 4 before step 5 exists precisely so this is discovered against a throwaway
@@ -53,15 +55,18 @@ cd infrastructure/remediation/terraform
 Set these in the tfvars file, on top of the existing variables:
 
 ```hcl
-enable_cloud_run_job_sandbox      = true
-sandbox_bucket_prefix             = "<globally unique prefix>"
-sandbox_job_name                  = "codesentry-remediation-sandbox"
-remediation_service_account_email = "<the identity codesentry-remediation runs as>"
+enable_cloud_run_job_sandbox           = true
+sandbox_bucket_prefix                 = "<globally unique prefix for this environment>"
+sandbox_job_name                      = "codesentry-remediation-sandbox"
+remediation_service_account_email     = "<the dedicated remediation runtime identity>"
+sandbox_release_service_account_email = "<the deployment workflow identity>"
 ```
 
-`remediation_service_account_email` is required once the sandbox is enabled. Leaving it empty
-fails the plan with that message rather than creating IAM members of the literal form
-`serviceAccount:`.
+Both identities are required once the sandbox is enabled and must be different. The release
+identity receives only `iam.serviceAccounts.getAccessToken` on this runtime identity so the
+smoke exercises the runtime's actual authority. The workflow's deployment principal still
+needs its existing image-push, job-update, service-deploy and service-account-use permissions.
+The sandbox job has a third, separate identity that cannot access remediation credentials.
 
 ```sh
 terraform init
@@ -77,20 +82,23 @@ The module needs Terraform >= 1.6. This apply creates:
   authority is `objectViewer` on the snapshots bucket, `objectCreator` on the results bucket,
   and `run.viewer` on this one job;
 * `remediation-sandbox-<environment>`: a VPC and subnet with Private Google Access on, no Cloud
-  NAT, no peering, an egress allow rule for the two Private Google Access ranges on tcp/443 at
-  priority 1000, and a deny-all egress rule at priority 65000;
-* the Cloud Run v2 job: 1 vCPU, 1 GiB, task timeout 600 s, `max_retries = 0`, direct VPC egress
-  with `ALL_TRAFFIC`, running as the sandbox identity;
+  NAT or peering, private DNS mapping `*.googleapis.com` to `private.googleapis.com`, a tcp/443
+  egress allow rule for `199.36.153.8/30`, and deny-all egress at priority 65000. The default
+  gateway route remains for Private Google Access; arbitrary VPC egress is blocked;
+* the Cloud Run v2 job: two parallel tasks, 1 vCPU and 1 GiB per task, task timeout 600 s,
+  `max_retries = 0`, explicit second generation environment, direct VPC egress with
+  `ALL_TRAFFIC`, running as the sandbox identity;
 * a custom role `remediation_sandbox_job_operator_<environment>` bound to the remediation
   service on this job: start, poll, and cancel executions, and nothing that can change the job's
-  image or its service account.
+  image or its service account. It includes `run.jobs.runWithOverrides`; `run.jobs.run` alone
+  cannot launch the driver's environment and task-count overrides.
 
 The job is created pointing at a placeholder digest and cannot run yet. That is expected.
 
 Record the outputs; steps 3 and 5 need them.
 
 ```sh
-terraform output sandbox_snapshot_bucket sandbox_result_bucket sandbox_job_name
+terraform output -json sandbox_github_environment_variables
 ```
 
 ### 2. Build and push the first job image
@@ -113,9 +121,9 @@ docker build \
 docker push "${REGION}-docker.pkg.dev/${PROJECT}/${GAR_REPOSITORY}/remediation-job:$(git rev-parse --short HEAD)"
 ```
 
-`.github/workflows/deploy-remediation-cloudrun.yml` does exactly this on every push to `main`,
-so after the first manual build this step is automatic. Do it by hand once, here, because the
-next two steps have to run against a known digest before the driver is ever selected.
+`.github/workflows/deploy-remediation-cloudrun.yml` builds this image on every release that
+selects or preserves `cloud_run_job`. Bootstrap it once here to diagnose the platform before
+requesting the first driver change.
 
 ### 3. Compute the digest and point the job at it
 
@@ -140,125 +148,70 @@ each task reads back from the Cloud Run Admin API, and returns `inconclusive` wi
 Terraform ignores changes to the job's image on purpose (`ignore_changes` on the container
 image), so a later `terraform plan` does not try to roll this back to the placeholder.
 
-### 4. Smoke test one execution and check the probes came back denied
+### 4. Run the live release smoke with the runtime identity
 
-This is the step that decides whether the level may be claimed. Run it before the driver is
-selected, so a sandbox that does not deny the network is found here and not in a verification.
-
-```sh
-BUCKET=$(cd infrastructure/remediation/terraform && terraform output -raw sandbox_result_bucket)
-NONCE=$(openssl rand -hex 32)
-PREFIX="smoke/$(date +%s)"
-```
-
-The smoke test runs the job with overrides that point at a snapshot the operator uploads. Build
-a one-file archive, upload it, and start one execution:
+Install `services/remediation-service/requirements.txt` in a Python 3.12 virtual environment.
+Authenticate Application Default Credentials as the release identity configured in step 1.
+The following command impersonates the runtime identity with a short-lived token; it does
+not pass the release identity's broader authority to the sandbox.
 
 ```sh
+JOB=$(cd infrastructure/remediation/terraform && terraform output -raw sandbox_job_name)
 SNAPSHOTS=$(cd infrastructure/remediation/terraform && terraform output -raw sandbox_snapshot_bucket)
+RESULTS=$(cd infrastructure/remediation/terraform && terraform output -raw sandbox_result_bucket)
+JOB_ACCOUNT=$(cd infrastructure/remediation/terraform && terraform output -raw sandbox_job_service_account)
+RUNTIME_ACCOUNT='<remediation_service_account_email from step 1>'
 WORK=$(mktemp -d)
-mkdir -p "${WORK}/repo" && printf 'print("smoke")\n' > "${WORK}/repo/smoke.py"
-tar -C "${WORK}/repo" -czf "${WORK}/baseline.tar.gz" smoke.py
-cp "${WORK}/baseline.tar.gz" "${WORK}/candidate.tar.gz"
-
-for VARIANT in baseline candidate; do
-  gcloud storage cp "${WORK}/${VARIANT}.tar.gz" "gs://${SNAPSHOTS}/${PREFIX}/${VARIANT}.tar.gz" --project "${PROJECT}"
-done
-
-MANIFEST=$(python3 - "${WORK}" "${PREFIX}" <<'PY'
-import hashlib, json, pathlib, sys
-work, prefix = pathlib.Path(sys.argv[1]), sys.argv[2]
-print(json.dumps({
-    variant: {
-        "object": f"{prefix}/{variant}.tar.gz",
-        "sha256": "sha256:" + hashlib.sha256((work / f"{variant}.tar.gz").read_bytes()).hexdigest(),
-    }
-    for variant in ("baseline", "candidate")
-}, sort_keys=True))
-PY
-)
-
-gcloud run jobs execute codesentry-remediation-sandbox \
-  --region "${REGION}" --project "${PROJECT}" --wait --tasks 2 \
-  --update-env-vars "^@^SANDBOX_JOB_SNAPSHOT_BUCKET=${SNAPSHOTS}@SANDBOX_JOB_SNAPSHOT_MANIFEST=${MANIFEST}@SANDBOX_JOB_RESULT_BUCKET=${BUCKET}@SANDBOX_JOB_RESULT_PREFIX=${PREFIX}@SANDBOX_JOB_CHECK={\"check_id\":\"smoke\",\"kind\":\"behavior\",\"argv\":[\"python3\",\"smoke.py\"],\"timeout_seconds\":30}@SANDBOX_JOB_NONCE=${NONCE}@SANDBOX_JOB_CHECK_USER=sandboxcheck@SANDBOX_JOB_PROJECT=${PROJECT}@SANDBOX_JOB_REGION=${REGION}@SANDBOX_JOB_NAME=codesentry-remediation-sandbox"
-```
-
-Then read both results and assert what they measured. This is the acceptance check; it fails
-loudly rather than printing something an operator has to interpret:
-
-```sh
-for VARIANT in baseline candidate; do
-  gcloud storage cat "gs://${BUCKET}/${PREFIX}/${VARIANT}.json" --project "${PROJECT}"
-done | python3 - "${NONCE}" "${IMAGE}" <<'PY'
-import hashlib, hmac, json, sys
-
-nonce, expected_image = sys.argv[1], sys.argv[2]
-raw = sys.stdin.read()
-decoder, index, envelopes = json.JSONDecoder(), 0, []
-while index < len(raw):
-    while index < len(raw) and raw[index].isspace():
-        index += 1
-    if index >= len(raw):
-        break
-    document, index = decoder.raw_decode(raw, index)
-    envelopes.append(document)
-
-assert len(envelopes) == 2, f"expected two task results, got {len(envelopes)}"
-for envelope in envelopes:
-    signature = hmac.new(nonce.encode(), envelope["payload"].encode(), hashlib.sha256).hexdigest()
-    assert hmac.compare_digest(signature, envelope["signature"]), "result was not written by this execution"
-    result = json.loads(envelope["payload"])
-    runner = result["runner"]
-    assert runner["environment_kind"] == "cloud-run-job", runner
-    assert runner["image_digest"] == expected_image, (runner["image_digest"], expected_image)
-    for target in ("metadata", "internet", "dns"):
-        probe = result["probes"][target]
-        assert probe["reached"] is False, f"{target} was {probe}; the sandbox did not deny the network"
-    print(f"{result['variant']}: exit {result['exit_code']}, "
-          f"namespace {runner['network_namespace']}, resolver {runner['dns_resolution']}, probes denied")
-print("SMOKE TEST PASSED")
-PY
+python services/remediation-service/scripts/cloud_run_sandbox_release.py smoke \
+  --project "$PROJECT" --region "$REGION" --job "$JOB" \
+  --image "$IMAGE" --release-sha "$(git rev-parse HEAD)" \
+  --snapshot-bucket "$SNAPSHOTS" --result-bucket "$RESULTS" \
+  --runtime-service-account "$RUNTIME_ACCOUNT" --job-service-account "$JOB_ACCOUNT" \
+  --receipt "$WORK/sandbox-release-receipt.json"
 ```
 
 A `reached: true` means the network was not denied. A `reached: null` means the probe could not
 run, which proves nothing and is refused exactly the same way. Either one stops the rollout
-here: do not continue to step 5. Check `network_namespace` in the printed line first, because
-`unavailable` there means the kernel refused the unprivileged user namespace and only the
-cleared resolver and the VPC rules are denying anything.
+here: do not continue to step 5. `network_namespace: "unavailable"` means the kernel refused
+the unprivileged user namespace and the task skipped the repository command. A reachable or
+inconclusive probe also skips the command with `sandbox_network_not_denied`. Local regression
+tests cover these refusals; they do not establish that the deployed Cloud Run kernel permits
+the namespace or that the cloud smoke test passed.
 
-Clean up the smoke objects; the one-day lifecycle rule is a backstop, not the plan:
+The tool uses the real driver to package and digest-check a fresh generated fixture, launches
+two tasks, checks each result MAC and its exact check/variant/execution/task binding, requires
+the current challenge output from UID/GID 65533, and requires all three expected probe
+endpoints to be denied. It checks the immutable execution's pinned image, identity, task
+counts, limits, entrypoint and VPC settings, and refuses a job that changes during the smoke.
+The tool attempts input deletion and cancellation of unfinished tasks; smoke result objects expire under the
+one-day lifecycle. The receipt contains the generated fixture's results, never the MAC nonce.
+
+### 5. Select the driver through the gated release workflow
+
+Set every value from `sandbox_github_environment_variables` as a variable in the matching
+GitHub `staging` or `production` environment. Also set its `GCP_PROJECT_ID`, `GCP_REGION`,
+registry and deployment-auth variables. Use a separate Terraform installation, job, buckets
+and identities for each environment. The workflow now selects that GitHub environment.
 
 ```sh
-gcloud storage rm "gs://${SNAPSHOTS}/${PREFIX}/**" "gs://${BUCKET}/${PREFIX}/**" --project "${PROJECT}"
+gh workflow run deploy-remediation-cloudrun.yml --ref main \
+  -f environment=staging -f sandbox_driver=cloud_run_job
 ```
 
-### 5. Flip the driver
+The release builds and pins its own image, runs a fresh live smoke, saves the receipt as a
+30-day workflow artifact, then invokes the tool's `verify` command immediately before service
+deployment. Verification requires a receipt no older than 15 minutes bound to this commit,
+image, identities, buckets and unchanged job generation, and re-reads the immutable execution.
+It deploys the service under the same runtime identity the smoke used. A refused smoke or
+receipt check triggers restoration of the previous job image; a restoration error remains a
+workflow failure. A prior manual receipt or
+an environment flag cannot replace this live release check.
 
-Only after step 4 printed `SMOKE TEST PASSED`:
-
-```sh
-gcloud run services update codesentry-remediation \
-  --region "${REGION}" --project "${PROJECT}" \
-  --update-env-vars "\
-SANDBOX_DRIVER=cloud_run_job,\
-SANDBOX_JOB_NAME=codesentry-remediation-sandbox,\
-SANDBOX_JOB_REGION=${REGION},\
-SANDBOX_JOB_PROJECT=${PROJECT},\
-SANDBOX_BUCKET=${SNAPSHOTS},\
-SANDBOX_RESULTS_BUCKET=${BUCKET},\
-SANDBOX_IMAGE_DIGEST=${IMAGE}"
-```
-
-Or, equivalently, run the deploy workflow with its `SANDBOX_DRIVER` input set to
-`cloud_run_job`. The input defaults to `local`, so an ordinary push to `main` never flips the
-driver by itself.
-
-`SANDBOX_RESULTS_BUCKET` may be omitted when the two buckets are the Terraform pair: the driver
-derives `<prefix>-results` from `<prefix>-snapshots`. Set it explicitly anyway; an env var that
-says what it means is cheaper than remembering the derivation.
-
-To go back, set `SANDBOX_DRIVER=local`. Nothing else has to change, and evidence produced
-afterwards is labelled `development_unverified` again, honestly.
+The input defaults to `preserve`: ordinary pushes retain the deployed driver and repeat the
+live gate whenever it is `cloud_run_job`. First deployment needs an explicit driver because
+there is no prior selection to preserve. Selecting `local` explicitly restores
+`development_unverified` evidence. This workflow does not restrict an administrator making
+out-of-band cloud changes; runtime per-task gates still refuse unsafe checks.
 
 ### 6. Confirm one real verification
 
@@ -316,18 +269,20 @@ measured.
    boundary Cloud Run provides, not a user-space kernel. A container escape is a container
    escape.
 4. **The unprivileged user namespace may not be available, and it is the only thing denying the
-   metadata server.** The entrypoint feature-detects it in a throwaway child and reports
-   `network_namespace: "applied"` or `"unavailable"`. When it is unavailable, the only remaining
-   denials are the cleared `/etc/resolv.conf` and the VPC's egress rules, and neither of those
-   reaches `169.254.169.254`. The driver refuses the evidence when any probe came back reachable,
-   so the failure is inert rather than unsafe, but an operator reading evidence should look at
-   this field rather than assume the strongest control was in force. See
+   metadata server.** The entrypoint tests the check user's exact demotion and namespace step
+   in a throwaway child and reports `network_namespace: "applied"` or `"unavailable"`.
+   An unavailable namespace stops the task before it runs any repository command. Every
+   required probe must then complete and explicitly report `false` before the command can
+   start. The command repeats the demotion and namespace step in its own pre-exec hook; a
+   failure there also prevents execution. The driver rejects completed evidence without the
+   namespace control even if its probes say `false`. See
    [The one thing step 4 might tell you](#the-one-thing-step-4-might-tell-you).
 5. **The entrypoint runs as root inside the job container.** It has to, in order to drop the
    check to a different user. It never executes repository content, and the check runs as
    `sandboxcheck`, which holds none of the task's credentials and cannot read the entrypoint's
    environment. But root in that container is real, and a defect in the entrypoint itself is not
-   contained by any of the controls above.
+   contained by any of the controls above. A configured check user with UID 0 or the
+   entrypoint's own UID is refused before any repository command runs.
 6. **There is no broker trust boundary.** The deployed shape is `SANDBOX_BROKER_MODE=inprocess`:
    the evidence is assembled in the repair service's own process, and there is no attestation
    between that process and the control plane. This level improves where the *check* runs. It
@@ -335,7 +290,9 @@ measured.
 7. **The image digest check trusts the Cloud Run Admin API, not the running kernel.** Each task
    reads the job's configured image with its own credentials and reports it; the driver compares
    that against the pinned digest. That establishes the job was configured to run that image. It
-   is not an attestation of the bytes that were actually executed.
+   is not an attestation of the bytes that were actually executed. The release gate also checks
+   the immutable execution template's pinned image; that is still an API assertion rather than
+   a kernel attestation.
 8. **The HMAC nonce proves origin, not correctness.** A result that verifies against the nonce
    came from a task this driver started with this nonce. It does not make the task's own
    measurements true, which is why the driver independently checks the check id, the variant,
@@ -348,10 +305,12 @@ measured.
 
 | What you see | What it means | What to do |
 | --- | --- | --- |
-| `inconclusive` / `sandbox_network_not_denied` | A probe reached its target, or could not be run. The sandbox did not do what the level claims, so no check result is reported at all | Re-run step 4 by hand and read `network_namespace` and `dns_resolution`. `unavailable` there with the metadata probe reached means the platform refused the user namespace and the level cannot be claimed at all: set `SANDBOX_DRIVER=local` and stop. Otherwise check the VPC egress rules were not widened and that no Cloud NAT was added |
+| `sandbox_network_namespace_unavailable` on a variant | The check user's namespace preflight failed. No repository command was executed | Stop rollout and investigate platform support for unprivileged user/network namespaces. Local tests cannot clear this deployment gate |
+| `inconclusive` / `sandbox_network_not_denied` | A required probe reached its target or could not complete, so the task skipped the repository command; the driver also rejects completed evidence without the namespace control | Stop rollout and re-run step 4. Inspect the task's namespace result and probe details |
 | `inconclusive` / `sandbox_image_digest_mismatch` | A task reported an image other than `SANDBOX_IMAGE_DIGEST`, or could not read one | A deploy updated the job without updating the service's env var, or the job identity lost `run.viewer` on the job. Re-run step 3 |
 | `sandbox_result_unavailable` on every variant | No signed result object was readable | Check the job identity still holds `objectCreator` on the results bucket and the remediation identity still holds `objectViewer`. Read the execution's logs |
 | `check_user_unavailable:KeyError` | The image has no `sandboxcheck` user | The job image was built from an older Dockerfile. Re-run steps 2 and 3 |
+| `check_user_unavailable:ValueError` | The configured check user is root or shares the entrypoint's UID. No repository command was executed | Restore the separate non-root `sandboxcheck` user |
 | `check_deadline_exceeded` | The execution did not finish inside the check's budget plus the 180 s start margin | Usually a cold start behind an image pull. If it repeats, the check's own `timeout_seconds` is too small for a container-start-bound sandbox |
 | `sandbox_execution_failed` | The driver itself raised | Configuration: a missing `SANDBOX_JOB_*` variable, or the remediation identity lacking the custom operator role. The service logs name which |
 

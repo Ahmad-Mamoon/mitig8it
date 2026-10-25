@@ -1,4 +1,3 @@
-import hashlib
 import hmac
 import os
 import re
@@ -13,10 +12,12 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_
 from starlette.responses import Response
 
 import request_context
+from rule_publication import postable_rule_ids
 from finding_quality import (
     cluster_findings,
     extract_match_context,
     has_path_containment_guard,
+    make_fingerprint,
     pattern_matches_reviewable_content,
     # Defined beside the matchers it configures, and re-exported here because both tiers and
     # the static assertion endpoint below read a rule through it.
@@ -28,8 +29,14 @@ from security_rules import (
     SECURITY_RULES,
     likely_llm_repo,
 )
-from opengrep_runner import ScanPathError, quarantined_rule_ids, run_opengrep, run_opengrep_with_limitations
+from opengrep_runner import ScanPathError, quarantined_rule_ids, run_opengrep_with_limitations
+from secret_detection import (
+    POSTING as SECRET_DETECTOR_POSTING,
+    POSTING_QUARANTINE as SECRET_POSTING_QUARANTINE,
+    secret_findings,
+)
 import static_assertion
+from dependency_diff import POSTING as DEPENDENCY_DIFF_POSTING, dependency_diff_findings
 from llm_client import redact
 from llm_triage import triage_findings
 from remediation_patches import build_remediation_patch
@@ -40,7 +47,6 @@ from test_code_scope import (
     is_analyzable_path,
     is_non_code_text_path,
     is_runtime_scannable_path,
-    is_test_code_path,
 )
 
 
@@ -105,6 +111,10 @@ DEFAULT_TIER1_BUDGET_SECONDS = 20.0
 DEFAULT_TIER1_FILE_BUDGET_SECONDS = 2.0
 LIMITATION_BUDGET = "budget"
 
+# The substring-search credential rule the secrets detector supersedes. It still runs on the
+# files the detector found nothing in; see `pattern_findings`.
+LEGACY_CREDENTIAL_RULE_ID = "secret.hardcoded.credential"
+
 
 def _positive_float_env(name: str, default: float) -> float:
     raw = os.getenv(name)
@@ -135,7 +145,20 @@ def tier1_file_budget_seconds() -> float:
 QUARANTINED_RULE_IDS = frozenset(
     {rule.rule_id for rule in SECURITY_RULES if rule.posting == POSTING_QUARANTINE}
     | set(quarantined_rule_ids())
+    | {
+        rule_id
+        for rule_id, posting in SECRET_DETECTOR_POSTING.items()
+        if posting == SECRET_POSTING_QUARANTINE
+    }
+    | {
+        rule_id
+        for rule_id, posting in DEPENDENCY_DIFF_POSTING.items()
+        if posting == SECRET_POSTING_QUARANTINE
+    }
 )
+PUBLICATION_RULE_IDS = postable_rule_ids()
+if not PUBLICATION_RULE_IDS:
+    raise RuntimeError("No approved rule definitions: packaged publication evidence is missing, invalid, or stale")
 
 request_context.configure_logging(os.getenv("LOG_LEVEL", "INFO"))
 logger = request_context.get_logger("mitig8it.analysis")
@@ -176,11 +199,6 @@ def require_internal_auth(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
-
-
-def make_fingerprint(rule_id: str, path: str, line_start: int, snippet: str) -> str:
-    raw = f"{rule_id}|{path}|{line_start}|{snippet.strip()}"
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def _meaningful_line_count(text: str) -> int:
@@ -399,6 +417,17 @@ def pattern_findings(
 
         non_code_text = is_non_code_text_path(path)
         file_started = time.monotonic()
+
+        # Secrets first, because the legacy credential regex defers to them. The detector
+        # reads the added lines only and owns its own path scoping, so it is not filtered by
+        # `non_code_text`: a key that passes its own structural verification is a leak in a
+        # README as much as in a module.
+        file_secret_findings = secret_findings(path, patch, content)
+        findings.extend(file_secret_findings)
+        # Newly added lockfile entries. Quarantined, so these are counted and withheld by
+        # `partition_by_posting_policy` like any other quarantined rule's output.
+        findings.extend(dependency_diff_findings(path, patch, content))
+
         rules_run = 0
         for rule in SECURITY_RULES:
             if time.monotonic() - file_started >= file_budget:
@@ -419,6 +448,13 @@ def pattern_findings(
             # template. Rules that recognize committed data rather than code shapes still
             # run on both.
             if non_code_text and not rule.scans_prose:
+                continue
+            # The secrets detector supersedes the credential regex on any file it has already
+            # reported. The regex is a substring search kept for the shapes the detector does
+            # not model, and two findings on one leaked key is one review conversation too
+            # many; `cluster_findings` cannot merge them because it keys `hardcoded_secret`
+            # on the exact snippet and the two quote different spans of the same line.
+            if rule.rule_id == LEGACY_CREDENTIAL_RULE_ID and file_secret_findings:
                 continue
             if rule.category == "unsafe LLM/prompt injection patterns" and not repo_has_llm_flow:
                 continue
@@ -460,11 +496,20 @@ def partition_by_posting_policy(
     quarantined: List[Dict[str, Any]] = []
     for finding in findings or []:
         rule_id = str(finding.get("rule_id") or "")
-        if rule_id in QUARANTINED_RULE_IDS:
+        if rule_id in QUARANTINED_RULE_IDS or rule_id not in PUBLICATION_RULE_IDS:
             quarantined.append(finding)
             QUARANTINED_FINDING_COUNT.labels(rule_id).inc()
         else:
-            postable.append(finding)
+            # Detector and Tier 3 model patches are advisory proposals, not verified
+            # candidates. The separate remediation service owns code generation,
+            # per-candidate sandbox verification, and publication. Never let a broad
+            # release flag turn an analysis snippet into a one-click GitHub commit.
+            published = {**finding, "remediation_patch": ""}
+            # The model's raw replacement field is not part of the public finding
+            # contract either. Drop it explicitly: HTTP returns dictionaries and
+            # cannot rely on protobuf's unknown-field omission for this boundary.
+            published.pop("fixed_code", None)
+            postable.append(published)
     return postable, quarantined
 
 
@@ -533,6 +578,10 @@ def analyze_pull_request_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
         findings = triage_findings(findings, file_patches, None)
     except Exception as e:
         print(f"LLM triage failed (non-blocking): {redact(e)}")
+    # Tier 3 may attach an advisory replacement after the detector findings passed
+    # the first publication filter. Reapply the boundary so analysis output can
+    # never carry executable code; verified remediation is a separate service.
+    findings, _triage_withheld = partition_by_posting_policy(findings)
     findings = classify_findings(findings)
 
     normalized = cluster_findings(classify_findings(findings))
@@ -615,7 +664,8 @@ def analyze_tier2_payload(payload: AnalyzePRRequest) -> Dict[str, Any]:
 
 
 def triage_findings_payload(payload: TriageRequest) -> Dict[str, Any]:
-    findings = payload.findings
+    original_count = len(payload.findings)
+    findings, _withheld = partition_by_posting_policy(payload.findings)
     if not findings:
         return {
             "repository_full_name": payload.repository_full_name,
@@ -623,17 +673,39 @@ def triage_findings_payload(payload: TriageRequest) -> Dict[str, Any]:
             "commit_sha": payload.commit_sha,
             "tier": 3,
             "findings": [],
-            "filtered_count": 0,
+            "filtered_count": original_count,
         }
 
-    original_count = len(findings)
     try:
         findings = triage_findings(findings, payload.file_patches, payload.repo_profile)
     except Exception as e:
         print(f"LLM triage failed (non-blocking): {redact(e)}")
 
+    findings, _withheld = partition_by_posting_policy(findings)
+    triaged_count = len(findings)
+
     # Triage may adjust severity; test-code findings stay informational.
     findings = classify_findings(findings)
+
+    # The cross-tier fold, and the only place in the pipeline that can do it.
+    #
+    # Each tier endpoint clusters its own findings before returning them, so a line matched
+    # twice inside one tier already arrives once. What no tier endpoint can see is a line
+    # matched by a tier 1 rule and a tier 2 rule, because the control plane calls
+    # `/analyze/pr/tier1` and `/analyze/pr/tier2` as two separate requests and concatenates
+    # the two lists. The concatenated list reaches this handler and nothing else, and until
+    # this call it went to the reviewer unfolded: a hardcoded credential that both tiers
+    # recognise produced two inline comments on one line, with near-identical remediation.
+    #
+    # `cluster_findings` is the same function each tier already ran, so this adds no second
+    # definition of what a duplicate is. It keys on file, internal type and adjacent lines,
+    # which is why it folds the pair and still leaves two genuinely different defects on one
+    # line alone: an injection and a committed credential on the same `run:` step have
+    # different internal types and different fixes, and both are still reported.
+    #
+    # It runs whether or not a model is configured. Tier 3 with no model key returns the
+    # findings it was given, and the fold is not a model's judgement.
+    findings = cluster_findings(findings)
 
     return {
         "repository_full_name": payload.repository_full_name,
@@ -641,7 +713,10 @@ def triage_findings_payload(payload: TriageRequest) -> Dict[str, Any]:
         "commit_sha": payload.commit_sha,
         "tier": 3,
         "findings": findings,
-        "filtered_count": original_count - len(findings),
+        # Triage filtering only. Folding two descriptions of one defect into one finding is
+        # not a finding being filtered out, and counting it here would overstate what the
+        # model removed.
+        "filtered_count": original_count - triaged_count,
     }
 
 

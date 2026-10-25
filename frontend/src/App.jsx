@@ -7,7 +7,6 @@ import AuthCallbackPage from './pages/AuthCallbackPage'
 import DashboardLayout from './components/DashboardLayout'
 import DashboardPage from './pages/DashboardPage'
 import ReportsPage from './pages/ReportsPage'
-import CodeAnalysisTest from './pages/CodeAnalysisTest'
 import RepositoriesPage from './pages/RepositoriesPage'
 import RepositoryDetailsPage from './pages/RepositoryDetailsPage'
 import PullRequestFindingsPage from './pages/PullRequestFindingsPage'
@@ -15,14 +14,10 @@ import FindingDetailPage from './pages/FindingDetailPage'
 import SuppressionsPage from './pages/SuppressionsPage'
 import SettingsPage from './pages/SettingsPage'
 import OnboardingPage from './pages/OnboardingPage'
-import SubscriptionPage from './pages/SubscriptionPage'
-import SupportPage from './pages/SupportPage'
-import ProfilePage from './pages/ProfilePage'
 import PrivacyPage from './pages/PrivacyPage'
 import TermsPage from './pages/TermsPage'
 import ExamplesPage from './pages/ExamplesPage'
 import BenchmarksPage from './pages/BenchmarksPage'
-import CustomersPage from './pages/CustomersPage'
 import SecurityPage from './pages/SecurityPage'
 import AboutPage from './pages/AboutPage'
 
@@ -57,7 +52,7 @@ export function AppRoutes() {
       <Route path="/auth/callback" element={<AuthCallbackPage />} />
       <Route path="/examples" element={<ExamplesPage />} />
       <Route path="/benchmarks" element={<BenchmarksPage />} />
-      <Route path="/customers" element={<CustomersPage />} />
+      <Route path="/customers" element={<Navigate to="/examples" replace />} />
       <Route path="/security" element={<SecurityPage />} />
       <Route path="/about" element={<AboutPage />} />
       <Route path="/privacy" element={<PrivacyPage />} />
@@ -72,7 +67,7 @@ export function AppRoutes() {
       >
         <Route index element={<DashboardIndexRoute />} />
         <Route path="home" element={<DashboardPage />} />
-        <Route path="analysis" element={<CodeAnalysisTest />} />
+        <Route path="analysis" element={<Navigate to="/dashboard/home" replace />} />
         <Route path="onboarding" element={<OnboardingPage />} />
         <Route path="repositories" element={<RepositoriesPage />} />
         <Route path="repositories/:repositoryId" element={<RepositoryDetailsPage />} />
@@ -80,9 +75,9 @@ export function AppRoutes() {
         <Route path="findings/:findingId" element={<FindingDetailPage />} />
         <Route path="suppressions" element={<SuppressionsPage />} />
         <Route path="reports" element={<ReportsPage />} />
-        <Route path="subscription" element={<SubscriptionPage />} />
-        <Route path="support" element={<SupportPage />} />
-        <Route path="profile" element={<ProfilePage />} />
+        <Route path="subscription" element={<Navigate to="/dashboard/home" replace />} />
+        <Route path="support" element={<Navigate to="/dashboard/home" replace />} />
+        <Route path="profile" element={<Navigate to="/dashboard/home" replace />} />
         <Route path="settings" element={<SettingsPage />} />
       </Route>
       <Route path="/app/*" element={<Navigate to="/dashboard" replace />} />

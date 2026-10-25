@@ -54,6 +54,12 @@ def create_sandbox_broker() -> SandboxBroker:
     return HttpSandboxBroker.from_env()
 
 
+def validate_sandbox_configuration() -> None:
+    """Reject a production local driver at startup without constructing any cloud clients."""
+    if selected_broker_mode() == "inprocess":
+        selected_driver_kind(LOCAL_DRIVER)
+
+
 __all__ = [
     "BrokerConfigurationError",
     "DRIVER_KINDS",
@@ -71,4 +77,5 @@ __all__ = [
     "create_sandbox_broker",
     "selected_broker_mode",
     "selected_driver_kind",
+    "validate_sandbox_configuration",
 ]

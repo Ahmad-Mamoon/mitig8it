@@ -85,8 +85,8 @@ def _spec(content=HARNESS_TEST, path=TEST_PATH, finding_id="finding-secret"):
     return {"finding_id": finding_id, "path": path, "content": content}
 
 
-def _bundle(request, snapshot, test=None, replacement=APP_REPAIRED):
-    return build_patch_bundle(request, snapshot, [whole_file_change(APP_PATH, APP_SOURCE, replacement)], [test or _spec()])
+def _bundle(request, snapshot, test=None, replacement=APP_REPAIRED, *, load_checks=False):
+    return build_patch_bundle(request, snapshot, [whole_file_change(APP_PATH, APP_SOURCE, replacement)], [test or _spec()], load_checks=load_checks)
 
 
 @requires_python
@@ -321,7 +321,7 @@ def test_python_syntax_and_load_checks_reject_a_broken_candidate(request_payload
         build_patch_bundle(request, snapshot, [whole_file_change(APP_PATH, APP_SOURCE, APP_SOURCE + "def broken(:\n")], [])
     assert error.value.code == f"candidate_syntax_invalid:{APP_PATH}"
     with pytest.raises(PatchPolicyError) as error:
-        build_patch_bundle(request, snapshot, [whole_file_change(APP_PATH, APP_SOURCE, APP_SOURCE.replace('"sk-live-aaaaaaaaaaaaaaaa"', "secrets.token_hex()"))], [])
+        build_patch_bundle(request, snapshot, [whole_file_change(APP_PATH, APP_SOURCE, APP_SOURCE.replace('"sk-live-aaaaaaaaaaaaaaaa"', "secrets.token_hex()"))], [], load_checks=True)
     assert error.value.code == f"candidate_load_failed:{APP_PATH}"
     assert "NameError" in error.value.guidance and "Python reports" in error.value.guidance
 
@@ -329,18 +329,18 @@ def test_python_syntax_and_load_checks_reject_a_broken_candidate(request_payload
 def test_python_load_check_records_missing_dependencies_and_environment_reads_as_limitations(request_payload):
     request = RepairRequest.model_validate(_payload(request_payload, extra_files=[("requirements.txt", "flask\n")]))
     snapshot = Snapshot(request)
-    bundle = _bundle(request, snapshot)
+    bundle = _bundle(request, snapshot, load_checks=True)
     assert f"{APP_PATH} now reads API_KEY from the environment; the deployment must provide it" in bundle.limitations
     # A literal name gets a placeholder during the load check, so the module loads past it and
     # a NameError further down is still caught; only a name the check cannot see is a limitation.
     assert not any(item.startswith("runtime load check") for item in bundle.limitations), bundle.limitations
     dynamic = APP_REPAIRED.replace('os.environ["API_KEY"]', 'os.environ["API_KEY_" + "SUFFIX"]')
-    bundle = build_patch_bundle(request, snapshot, [whole_file_change(APP_PATH, APP_SOURCE, dynamic)], [_spec()])
+    bundle = build_patch_bundle(request, snapshot, [whole_file_change(APP_PATH, APP_SOURCE, dynamic)], [_spec()], load_checks=True)
     assert any(item.startswith(f"runtime load check skipped for {APP_PATH}: environment variable 'API_KEY_SUFFIX' is not set") for item in bundle.limitations)
     with pytest.raises(PatchPolicyError) as error:
-        build_patch_bundle(request, snapshot, [whole_file_change(APP_PATH, APP_SOURCE, APP_REPAIRED + "\nVALUE = ast.literal_eval('1')\n")], [])
+        build_patch_bundle(request, snapshot, [whole_file_change(APP_PATH, APP_SOURCE, APP_REPAIRED + "\nVALUE = ast.literal_eval('1')\n")], [], load_checks=True)
     assert error.value.code == f"candidate_load_failed:{APP_PATH}" and "NameError" in error.value.guidance
-    bundle = build_patch_bundle(request, snapshot, [whole_file_change(APP_PATH, APP_SOURCE, "import flask\n" + APP_SOURCE)], [_spec()])
+    bundle = build_patch_bundle(request, snapshot, [whole_file_change(APP_PATH, APP_SOURCE, "import flask\n" + APP_SOURCE)], [_spec()], load_checks=True)
     assert any("No module named 'flask'" in item for item in bundle.limitations)
     assert environment_notes(APP_PATH, APP_SOURCE, APP_REPAIRED) == [f"{APP_PATH} now reads API_KEY from the environment; the deployment must provide it"]
     assert environment_notes(APP_PATH, APP_REPAIRED, APP_REPAIRED) == []

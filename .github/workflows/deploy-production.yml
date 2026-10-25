@@ -1,0 +1,93 @@
+# Production is one ordered release, not five independent reactions to CI.
+# The API/client revision lands before either authenticated gRPC server revision;
+# the cross-service smoke must pass before the public frontend is deployed.
+name: Deploy production
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  verify-ci:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Require a successful CI run for this exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          SUCCESSFUL_RUNS=$(gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --workflow CI \
+            --commit "$GITHUB_SHA" \
+            --branch main \
+            --event push \
+            --limit 20 \
+            --json conclusion \
+            --jq 'map(select(.conclusion == "success")) | length')
+          if [ "$SUCCESSFUL_RUNS" -lt 1 ]; then
+            echo "No successful CI run exists for production commit $GITHUB_SHA." >&2
+            exit 1
+          fi
+
+  api-service:
+    needs: verify-ci
+    uses: ./.github/workflows/deploy-api-cloudrun.yml
+    with:
+      environment: production
+      api_min_instances: '1'
+      ref: ${{ github.sha }}
+    secrets: inherit
+
+  analysis-service:
+    needs: api-service
+    uses: ./.github/workflows/deploy-analysis-cloudrun.yml
+    with:
+      environment: production
+      ref: ${{ github.sha }}
+    secrets: inherit
+
+  github-service:
+    needs: api-service
+    uses: ./.github/workflows/deploy-github-cloudrun.yml
+    with:
+      environment: production
+      ref: ${{ github.sha }}
+    secrets: inherit
+
+  remediation-service:
+    needs: api-service
+    uses: ./.github/workflows/deploy-remediation-cloudrun.yml
+    with:
+      environment: production
+      sandbox_driver: cloud_run_job
+      ref: ${{ github.sha }}
+    secrets: inherit
+
+  internal-grpc-smoke:
+    needs: [analysis-service, github-service]
+    uses: ./.github/workflows/smoke-internal-grpc.yml
+    with:
+      environment: production
+    secrets: inherit
+
+  frontend:
+    needs: [internal-grpc-smoke, remediation-service]
+    uses: ./.github/workflows/deploy-frontend-firebase.yml
+    with:
+      environment: production
+      ref: ${{ github.sha }}
+    secrets: inherit

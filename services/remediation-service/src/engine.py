@@ -222,13 +222,11 @@ async def combine_and_verify(
     # A batch carries one kind of evidence, so either every entry here was asserted statically or
     # none was; `repair` has already dropped the asserted ones when an executed candidate exists.
     asserted_only = all(verification.verification_level == STATIC_ASSERTION_VERIFICATION_LEVEL for _, _, verification in entries)
-    # Combining shells out for syntax and load checks and diffs every hunk pair, so it
-    # runs off the loop: the worker's lease renewal shares this loop and a combine
-    # longer than the lease would otherwise lose the job mid-verification. An all-asserted batch
-    # combines without the load check, because requiring the union would execute repository code
-    # that no candidate in the batch claims was executed.
+    # Combining runs parse-only syntax checks and diffs every hunk pair, so it runs off the
+    # loop to preserve lease renewal. Module loading is untrusted execution and belongs only
+    # to the configured verifier sandbox, including for an executed candidate's combined tree.
     combined = await asyncio.to_thread(
-        functools.partial(combine_patch_bundles, load_checks=not asserted_only),
+        functools.partial(combine_patch_bundles, load_checks=False),
         request,
         snapshot,
         [bundle for _, bundle, _ in entries],
@@ -460,13 +458,15 @@ async def _per_finding_candidates(
             dependent.append(_dependent(finding_id, "no hunk is attributed to this finding once the hunks of unproven findings are dropped"))
             continue
         try:
-            # Off the event loop: the bundle build shells out to the syntax and load checks.
+            # Parse-only syntax checks run off the event loop. Never load a candidate on the
+            # service host while splitting it; any necessary execution goes to the verifier.
             bundle = await asyncio.to_thread(
                 build_patch_bundle,
                 group_request,
                 snapshot,
                 [hunk.spec() for hunk in hunks],
                 [tests[finding_id]] if finding_id in tests else None,
+                load_checks=False,
             )
         except PatchPolicyError as exc:
             dependent.append(_dependent(finding_id, f"a candidate holding only this finding's hunks was rejected as {exc.code}"))
@@ -650,7 +650,7 @@ class RepairEngine:
         tests = [proofs[patch.finding_id].spec() for patch in templated]
         step = {"sequence": 0, "tool": "template_patch", "arguments_digest_only": {"finding_ids": [patch.finding_id for patch in templated], "paths": sorted({change["path"] for change in changes})}, "outcome": "ok", "reason": None, "result_bytes": 0}
         try:
-            bundle = await asyncio.to_thread(build_patch_bundle, narrowed, snapshot, changes, tests)
+            bundle = await asyncio.to_thread(build_patch_bundle, narrowed, snapshot, changes, tests, load_checks=False)
         except PatchPolicyError as exc:
             step["outcome"] = "rejected"
             step["reason"] = str(exc.code)[:120]

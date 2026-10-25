@@ -66,7 +66,6 @@ describe('migrationRunner', () => {
 
     const client = {
       query: jest.fn()
-        .mockResolvedValueOnce()
         .mockResolvedValueOnce({
           rows: [{ version: '0001_first.sql', checksum: calculateChecksum('SELECT 1;') }],
         }),
@@ -77,6 +76,8 @@ describe('migrationRunner', () => {
     const pending = await getPendingMigrations('/tmp/migrations');
 
     expect(pending.map((migration) => migration.name)).toEqual(['0002_second.sql']);
+    expect(client.query).toHaveBeenCalledTimes(1);
+    expect(client.query).toHaveBeenCalledWith('SELECT version, checksum FROM schema_migrations');
     expect(client.release).toHaveBeenCalled();
   });
 

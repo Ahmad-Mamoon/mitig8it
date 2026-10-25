@@ -2,11 +2,12 @@
 
 Standard library only, never part of a repair. Materialized at .mitig8it/harness.py; a test at
 .mitig8it/regression/<finding>.test.py runs as `python3 .mitig8it/harness.py <test>` and does
-`import harness as h`. It loads a repository module with flask, sqlite3, psycopg, sqlalchemy,
+`import harness as h`. It loads a repository module with flask, django, sqlite3, psycopg, sqlalchemy,
 subprocess, os.system, os.environ, and open() faked and recorded, invokes plain functions or
 Flask views, and asserts on what the module did.
 """
 import builtins
+import hashlib as _hashlib
 import importlib.abc
 import importlib.util
 import inspect
@@ -26,6 +27,8 @@ subprocess = types.SimpleNamespace(calls=[])
 fs = types.SimpleNamespace(reads=[], writes=[])
 flask = types.SimpleNamespace(routes=[])
 env = types.SimpleNamespace(reads=[])
+crypto = types.SimpleNamespace(digests=[], kdfs=[])
+cookies = []
 stubbed = []
 _config = {}
 _loaded_names = []
@@ -45,7 +48,7 @@ def fail(message, detail=None):
 
 
 def _reset():
-    for items in (db.queries, subprocess.calls, fs.reads, fs.writes, flask.routes, env.reads, stubbed):
+    for items in (db.queries, subprocess.calls, fs.reads, fs.writes, flask.routes, env.reads, stubbed, crypto.digests, crypto.kdfs, cookies):
         del items[:]
 
 
@@ -379,6 +382,49 @@ def _fake_open(file, mode="r", *args, **kwargs):
     return io.StringIO(content.decode() if isinstance(content, bytes) else str(content))
 
 
+# --- hashlib fake: the real digests and KDFs, with what each was fed recorded --------------------
+def _bytes(value):
+    return value.encode() if isinstance(value, str) else bytes(value)
+
+
+class _Digest:
+    def __init__(self, name, inner, data=None):
+        self._entry, self._inner = {"algorithm": str(name).lower(), "data": []}, inner
+        crypto.digests.append(self._entry)
+        if data is not None:
+            self.update(data)
+
+    def update(self, data):
+        self._entry["data"].append(_bytes(data))
+        self._inner.update(data)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+def _hashlib_module():
+    module = types.ModuleType("hashlib")
+    module.__dict__.update({k: v for k, v in vars(_hashlib).items() if not k.startswith("__")})
+
+    def maker(name):
+        return lambda data=None, **kwargs: _Digest(name, _hashlib.new(name, **kwargs), data)
+
+    for name in _hashlib.algorithms_guaranteed:
+        setattr(module, name, maker(name))
+    module.new = lambda name, data=None, **kwargs: _Digest(name, _hashlib.new(name, **kwargs), data)
+
+    def scrypt(password, **kwargs):
+        crypto.kdfs.append({"kind": "scrypt", "password": _bytes(password)})
+        return _hashlib.scrypt(password, **kwargs)
+
+    def pbkdf2_hmac(hash_name, password, *args, **kwargs):
+        crypto.kdfs.append({"kind": "pbkdf2", "password": _bytes(password)})
+        return _hashlib.pbkdf2_hmac(hash_name, password, *args, **kwargs)
+
+    module.scrypt, module.pbkdf2_hmac = scrypt, pbkdf2_hmac
+    return module
+
+
 # --- flask fake -------------------------------------------------------------------------------
 class HTTPException(Exception):
     def __init__(self, code=500, description=None):
@@ -395,10 +441,11 @@ class Response:
         self.data = response if isinstance(response, (str, bytes)) else ("".join(response) if response is not None else "")
         self.body = self.data
 
-    def set_cookie(self, *args, **kwargs):
-        pass
+    def set_cookie(self, key, value="", max_age=None, expires=None, path="/", domain=None, secure=False, httponly=False, samesite=None, **kwargs):
+        cookies.append({"name": key, "secure": secure, "httponly": httponly, "samesite": samesite})
 
-    delete_cookie = set_cookie
+    def delete_cookie(self, *args, **kwargs):
+        pass
 
     def get_json(self, silent=True):
         try:
@@ -475,9 +522,16 @@ def _rule_regex(rule):
     return re.compile("^" + pattern + "/?$")
 
 
+class _Config(dict):
+    def _load(self, *args, **kwargs):
+        return True
+
+    from_object = from_pyfile = from_envvar = from_mapping = from_prefixed_env = from_file = _load
+
+
 class Flask:
     def __init__(self, import_name="app", url_prefix=None, **kwargs):
-        self.name, self.import_name, self.config, self.url_prefix = import_name, import_name, {}, url_prefix or ""
+        self.name, self.import_name, self.config, self.url_prefix = import_name, import_name, _Config(), url_prefix or ""
         self.routes, self.logger, self.jinja_env = flask.routes, types.SimpleNamespace(info=print, warning=print, error=print, debug=print, exception=print), None
 
     def add_url_rule(self, rule, endpoint=None, view_func=None, methods=None, **kwargs):
@@ -681,6 +735,80 @@ class _AutoStubFinder(importlib.abc.MetaPathFinder):
         return importlib.util.spec_from_loader(fullname, _StubLoader(), is_package=True)
 
 
+# --- Django: raw SQL through django.db.connection, views called with a fake request -----------
+# Only the surface a view needs to run is real: `connection.cursor()` records queries exactly as
+# the DB-API fakes do (`%s` placeholders), the auth and HTTP-method decorators pass the view
+# through unchanged, and the response classes carry a status and a body. Everything else under
+# `django` is answered by the auto-stub, as any other third-party import is.
+def _passthrough_decorator(*args, **kwargs):
+    if len(args) == 1 and callable(args[0]) and not kwargs:
+        return args[0]
+    return lambda view: view
+
+
+def _decorator_factory(*args, **kwargs):
+    return lambda view: view
+
+
+class Http404(Exception):
+    pass
+
+
+def _django_response(status):
+    def build(content=b"", *args, **kwargs):
+        return Response(content if isinstance(content, (str, bytes)) else str(content), kwargs.get("status", status), {"content-type": kwargs.get("content_type") or "text/html"})
+    return build
+
+
+def _django_json_response(data, *args, **kwargs):
+    return Response(_json.dumps(data, default=str), kwargs.get("status", 200), {"content-type": "application/json"})
+
+
+def _django_redirect(to, *args, **kwargs):
+    return Response("", 302, {"location": str(to)})
+
+
+def django_request(method="GET", get=None, post=None, cookies=None, headers=None, user=None, body=b"", path="/"):
+    """A stand-in for Django's HttpRequest: what a view reads off its first argument."""
+    request = types.SimpleNamespace()
+    request.method, request.path, request.body = method.upper(), path, body
+    request.GET, request.POST = _MultiDict(get or {}), _MultiDict(post or {})
+    request.COOKIES, request.headers = _MultiDict(cookies or {}), _MultiDict(headers or {})
+    request.META = _MultiDict({"REMOTE_ADDR": "127.0.0.1"})
+    request.FILES, request.session = _MultiDict(), _MultiDict()
+    request.user = user or types.SimpleNamespace(is_authenticated=True, is_anonymous=False, is_staff=False, is_superuser=False, id=1, pk=1, username="mitig8it")
+    request.get_full_path = lambda: path
+    return request
+
+
+def _django_module():
+    def module(name, **attributes):
+        built = _StubModule(name)
+        built.__path__ = []
+        for key, value in attributes.items():
+            setattr(built, key, value)
+        sys.modules[name] = built
+        return built
+
+    connection = Connection("django.db")
+    top = module("django", VERSION=(4, 2, 0, "final", 0))
+    module("django.db", connection=connection, connections={"default": connection})
+    module("django.http", HttpResponse=_django_response(200), HttpResponseBadRequest=_django_response(400),
+           HttpResponseForbidden=_django_response(403), HttpResponseNotFound=_django_response(404),
+           HttpResponseRedirect=_django_redirect, JsonResponse=_django_json_response, Http404=Http404)
+    module("django.shortcuts", redirect=_django_redirect, render=lambda request, name, context=None, **k: Response("template:%s" % name, 200))
+    module("django.contrib")
+    module("django.contrib.auth")
+    module("django.contrib.auth.decorators", login_required=_passthrough_decorator,
+           permission_required=_decorator_factory, user_passes_test=_decorator_factory)
+    module("django.views")
+    module("django.views.decorators")
+    module("django.views.decorators.http", require_GET=_passthrough_decorator, require_POST=_passthrough_decorator,
+           require_safe=_passthrough_decorator, require_http_methods=_decorator_factory)
+    module("django.views.decorators.csrf", csrf_exempt=_passthrough_decorator, csrf_protect=_passthrough_decorator)
+    return top
+
+
 # --- loading ----------------------------------------------------------------------------------
 def _install(real, stubs):
     fakes = {
@@ -691,6 +819,8 @@ def _install(real, stubs):
         "pymysql": lambda: _db_module("pymysql", "pyformat"),
         "sqlalchemy": _sqlalchemy_module,
         "subprocess": _subprocess_module,
+        "hashlib": _hashlib_module,
+        "django": _django_module,
     }
     for name, factory in fakes.items():
         if name in real:
@@ -899,6 +1029,26 @@ def assert_not_in_source(module, literal, message=None):
 def assert_no_commands(message=None):
     if subprocess.calls:
         fail(message or "expected no process to run", [item["command"] for item in subprocess.calls])
+
+
+def assert_password_hash(password, message=None):
+    """The password never reached a fast digest and did reach hashlib.scrypt or pbkdf2_hmac."""
+    want = _bytes(password)
+    fast = [d["algorithm"] for d in crypto.digests if any(want in item for item in d["data"])]
+    if fast:
+        fail(message or "the password was digested with a fast hash", fast)
+    if not any(k["password"] == want for k in crypto.kdfs):
+        fail(message or "expected the password to reach hashlib.scrypt or hashlib.pbkdf2_hmac", [k["kind"] for k in crypto.kdfs])
+
+
+def assert_cookie_flags(name=None, message=None):
+    """Every recorded set_cookie (of that name) is Secure, HttpOnly and SameSite Lax or Strict."""
+    found = [c for c in cookies if name is None or c["name"] == name]
+    if not found:
+        fail(message or "no cookie%s was set" % ("" if name is None else " named %r" % name), [c["name"] for c in cookies])
+    for c in found:
+        if c["secure"] is not True or c["httponly"] is not True or str(c["samesite"]).lower() not in ("lax", "strict"):
+            fail(message or "cookie %r lacks secure, httponly or samesite" % c["name"], c)
 
 
 def run(body):

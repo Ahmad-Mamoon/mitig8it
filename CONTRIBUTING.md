@@ -13,7 +13,7 @@ document.
 | Python | 3.11 | Both Python services pin against it. `make deps` calls `python3.11`; override with `make PYTHON311=/path/to/python3.11 deps`. |
 | Node | 22 LTS or later | The sandbox harness needs `module.stripTypeScriptTypes` and `registerHooks`. The exact version the service image uses is `ARG NODE_VERSION` in `services/remediation-service/Dockerfile`. |
 | npm | Ships with Node | Every Node package is installed with `npm ci` from its lockfile. |
-| Docker | Any recent version | Only for `docker compose` local development and for building the action image. Not needed for `make test` or `make bench`. |
+| Docker or Podman | Any recent version | Only for `docker compose` local development and for building the action image. Not needed for `make test` or `make bench`. Podman works in place of Docker for both; `podman compose` and `podman build` take the same arguments used here. |
 
 Nothing else. No database, no cloud credentials and no model key is needed to run the tests or the
 benchmarks: every suite that needs a database is a separate integration target, and every adapter
@@ -63,6 +63,11 @@ intuition about what a good number looks like.
 The bigger measurements are not in `make bench`, because they download and analyse 23 third-party
 repositories and replay 165 pull requests against the GitHub API. Their commands are in
 `benchmarks/vulnerable-corpus/README.md` and `scripts/replay/README.md`.
+
+One of them is a gate: `make recall-ratchet` scans the 23 corpus trees and fails if a labelled
+vulnerability that was detected is no longer detected. CI runs it on pull requests that touch the
+rules. If a rule change of yours gains or deliberately loses a label, run `make recall-baseline`
+and commit `benchmarks/vulnerable-corpus/recall-baseline.json` with it.
 
 ## Adding a rule
 
@@ -149,6 +154,55 @@ test that proves the repair. There are five today: `sql_parameterization`, `comm
 6. Record the reach: how many findings in the corpus the template patches, how many the service
    writes a proof for, and how many verify end to end. The gap between those three is the honest
    part.
+
+## How this repository is written
+
+Most of the code here is written by AI agents working in parallel branches, at a rate no person
+matches. `git shortlog -sn` shows the shape of it. You are not competing with that, and it is
+better to know before you spend a weekend here than to work it out from the commit log afterwards.
+
+What it means in practice:
+
+- **An assignment is a lock.** While an issue is assigned to you, the files it names are not
+  changed by an agent. If something else has to change them first, you get a comment on the issue
+  saying so before it happens, rather than a merge conflict afterwards.
+- **Claim it by commenting, and say how you mean to fix it.** Two or three sentences: the files
+  you expect to change and the shape of the fix. You are assigned on that comment. The sketch is
+  not a gate to pass, it is so a wrong approach costs you a comment instead of a weekend.
+- **You get an answer on the approach within one working day.** If it is wrong, you are told what
+  is wrong with it and what to do instead, on the issue, before you have written the code. An
+  issue text says what done looks like; it does not always say the one way to get there, and the
+  file it points you at is sometimes not the file that holds the answer.
+- **An assignment lapses after ten days** with no commit and no comment, and the issue goes back on
+  the board. That is not a judgement about you. It is so the next person can tell what is actually
+  free.
+- **A first pull request gets a reply from a person within one working day**, even when the reply
+  is a question.
+
+**Where a person is worth more than an agent here.** Adjudication is the work this project runs
+on, and it is judgement rather than throughput: whether a finding is real, whether a refusal was
+correct, whether a repair is one a reviewer would actually commit. Every precision number under
+`docs/validation/` is only as good as the adjudication behind it, and the posting policy in
+[Adding a rule](#adding-a-rule) spends those judgements directly. An agent can produce candidates
+all day. Someone has to be right about them.
+
+## Sign-off, and why there is no contributor licence agreement
+
+Every commit needs a `Signed-off-by` line matching its author:
+
+```sh
+git commit -s -m "..."
+```
+
+That line is the [Developer Certificate of Origin](DCO), reproduced verbatim at the root of this
+repository. It is a statement that you wrote the change or have the right to submit it. Nothing
+more is asked: this project does not use a contributor licence agreement and will never ask you to
+assign copyright. You keep the copyright in what you write, under the repository's Apache 2.0
+licence. Most employers have already cleared sign-off for their engineers and have not cleared
+assignment, which is the reason for the choice.
+
+`.github/workflows/dco.yml` checks it on every pull request and, when a commit is missing the line,
+prints the exact command to fix it.
 
 ## Conventions
 

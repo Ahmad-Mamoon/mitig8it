@@ -255,11 +255,11 @@ def test_a_candidate_using_an_unimported_identifier_at_load_is_rejected(request_
     request = RepairRequest.model_validate(_no_profile_payload(request_payload))
     snapshot = Snapshot(request)
     with pytest.raises(PatchPolicyError, match="candidate_load_failed:src/db.js") as info:
-        build_patch_bundle(request, snapshot, [whole_file_change("src/db.js", JS_SOURCE, USES_UNIMPORTED_EXECFILE)], [_spec(JS_REGRESSION_TEST)])
+        build_patch_bundle(request, snapshot, [whole_file_change("src/db.js", JS_SOURCE, USES_UNIMPORTED_EXECFILE)], [_spec(JS_REGRESSION_TEST)], load_checks=True)
     assert "ReferenceError" in info.value.guidance and "execFile is not defined" in info.value.guidance
     assert "imported or defined" in info.value.guidance
     # The same code with the import in place loads, so the rejection was about the import.
-    bundle = build_patch_bundle(request, snapshot, [whole_file_change("src/db.js", JS_SOURCE, IMPORTS_EXECFILE)], [_spec(JS_REGRESSION_TEST)])
+    bundle = build_patch_bundle(request, snapshot, [whole_file_change("src/db.js", JS_SOURCE, IMPORTS_EXECFILE)], [_spec(JS_REGRESSION_TEST)], load_checks=True)
     assert not any("runtime load check" in item for item in bundle.limitations)
 
 
@@ -267,7 +267,7 @@ def test_a_candidate_using_an_unimported_identifier_at_load_is_rejected(request_
 def test_a_declared_but_uninstalled_dependency_is_a_limitation_not_a_rejection(request_payload):
     request = RepairRequest.model_validate(_no_profile_payload(request_payload))
     snapshot = Snapshot(request)
-    bundle = build_patch_bundle(request, snapshot, [whole_file_change("src/db.js", JS_SOURCE, REQUIRES_DECLARED_PG)], [_spec(JS_REGRESSION_TEST)])
+    bundle = build_patch_bundle(request, snapshot, [whole_file_change("src/db.js", JS_SOURCE, REQUIRES_DECLARED_PG)], [_spec(JS_REGRESSION_TEST)], load_checks=True)
     limitation = next(item for item in bundle.limitations if item.startswith("runtime load check skipped for src/db.js"))
     assert "Cannot find module 'pg'" in limitation
 
@@ -278,7 +278,7 @@ def test_a_module_that_did_not_load_before_the_change_is_inconclusive_not_reject
     request = RepairRequest.model_validate(payload)
     snapshot = Snapshot(request)
     bundle = build_patch_bundle(
-        request, snapshot, [whole_file_change("src/db.js", THROWS_ON_LOAD, THROWS_ON_LOAD + "// still broken\n")], [_spec(JS_REGRESSION_TEST)]
+        request, snapshot, [whole_file_change("src/db.js", THROWS_ON_LOAD, THROWS_ON_LOAD + "// still broken\n")], [_spec(JS_REGRESSION_TEST)], load_checks=True
     )
     assert any(item.startswith("runtime load check inconclusive for src/db.js") for item in bundle.limitations)
 

@@ -35,6 +35,7 @@ why `we45/Vulnerable-Flask-App` was considered and dropped in favour of `anxoler
 | `labels.json` | The corpus: the repositories with their pinned refs and licences, and every label. |
 | `adjudications.json` | Hand-read verdicts on findings no label covers, keyed by finding fingerprint. |
 | `harvest_cve_labels.py` | Proposes candidate labels from advisories that name their fixing commit. |
+| `recall-baseline.json` | Per label, whether it is detected and whether a posting rule detects it. Generated; see below. |
 
 A label is one vulnerability:
 
@@ -95,6 +96,51 @@ $PY scripts/replay/score.py results/*.json --labels benchmarks/vulnerable-corpus
     --adjudications benchmarks/vulnerable-corpus/adjudications.json --out /tmp/score.md
 ```
 
+## The recall ratchet
+
+`recall-baseline.json` records, for every label, whether a finding of an expected class lands
+on the labelled lines (`hit`) and whether one of those findings comes from a rule that is
+allowed to post (`posting_hit`). `scripts/replay/ratchet.py check` compares a fresh run with
+it, so a label that is detected today cannot stop being detected without somebody seeing it.
+The precision benchmarks cannot do this: they keep one true positive per rule family, and a
+rule can lose most of its real detections and still match that one.
+
+```sh
+make recall-ratchet     # scan the 23 trees, compare with the baseline
+make recall-baseline    # scan the 23 trees, rewrite the baseline
+```
+
+or, with the result files already on disk:
+
+```sh
+$PY scripts/replay/ratchet.py measure --results results/
+$PY scripts/replay/ratchet.py check results/
+$PY scripts/replay/ratchet.py update results/
+```
+
+`check` exits 1 and names the label ids when a label that was hit is no longer hit, and,
+listed separately, when a label that a posting rule hit is now hit only by a quarantined
+rule. A newly hit label is printed as an improvement and does not fail. It exits 2 when the
+run is not a measurement of the whole corpus (a repository has no result, a batch died, a
+stage ran out of time, the scanner was missing) or when the baseline and `labels.json` name
+different labels, because findings lost to a timeout are indistinguishable from a rule that
+stopped matching. `measure` runs tier 1 without its time budget for the same reason;
+`scripts/replay/README.md` says what that budget was doing to snapshot runs.
+
+Refresh the baseline in the same change whenever one of these is true, and commit the result:
+
+* a rule change reaches a label it did not reach before, so the gain is held from then on;
+* a label is added to or removed from `labels.json`;
+* a loss is intended, for example a rule is quarantined on measured precision. The label then
+  appears in the baseline's diff, which is where a reviewer is asked to agree to it.
+
+The baseline also carries the rule ids that matched when it was written. They are there so a
+failure can say what used to match, and they decide nothing: a label stays hit when a
+different rule takes it over.
+
+`.github/workflows/recall-ratchet.yml` runs the check on pull requests that touch the rules,
+the scanner wrapper, `scripts/replay/` or this directory.
+
 ## Adding a label
 
 A label is a measurement, so it has to be one someone read.
@@ -113,3 +159,87 @@ A label is a measurement, so it has to be one someone read.
 * For a CVE, take the range from the fix diff's **old side**, at the parent commit's line
   numbers, and check that what the fix deleted really is the vulnerable statement.
   `harvest_cve_labels.py` prints the candidates; it does not decide.
+* Refresh `recall-baseline.json` in the same change. The ratchet refuses to compare while the
+  two files name different labels.
+
+## Strict standalone detection report
+
+The historical `score.py` report is exploratory: it flattens findings without
+retaining completed-zero-result versus failed/missing file coverage, and joins
+hand verdicts by fingerprint without binding the system/configuration revision.
+Do not use its fixture percentages as production accuracy or release admission.
+The labels are incomplete, so an unlabelled alert is not automatically false and
+an unobserved tree is not automatically a missed vulnerability.
+
+The stricter offline contract is separate and does not modify these labels:
+
+```sh
+.venv/analysis/bin/python -m benchmarks.detection_evaluation \
+  --labels benchmarks/vulnerable-corpus/labels.json \
+  --observations path/to/detection-observations.json \
+  --adjudications path/to/scoped-adjudications.json
+.venv/analysis/bin/python -m pytest benchmarks/test_detection_evaluation.py -q
+```
+
+No observations is a supported diagnostic: all labels remain unobserved. Legacy
+replay JSON or fingerprint-only adjudications are explicitly invalid for this
+contract; the report never backfills identity from the current checkout.
+
+Each observation document must use `schema_version: detection-observations-v1`
+and contain:
+
+- `corpus_sha256`: SHA-256 of the complete canonical label document (JSON with
+  sorted keys and compact separators), not just the labels that were detected.
+- `scope: published_detection`, the pinned `repo` and full 40-character `ref`.
+  Only one observation document per repository/tree is accepted; do not pool
+  repeated runs or different systems as independent samples.
+- `system`: full 40-character `source_revision`, 64-character `artifact_sha256`,
+  `configuration_sha256`, and `publication_policy_sha256`, plus boolean
+  `triage_enabled`. All documents in one report must identify the same system.
+  Configuration identity must cover scanner versions, enabled stages, flags,
+  model/prompt identity when enabled, and all effective detection settings.
+- `files`: explicit file observations with canonical relative `path`, full
+  `source_sha256`, `findings` (including an explicit empty array when none), and
+  `stages`. Stage keys are exactly `tier1`, `tier2`, and also `tier3` when enabled;
+  each status is `complete`, `partial`, `error`, or `not_attempted`.
+- Each finding has nonempty `fingerprint` and `rule_id`, matching `file_path`,
+  positive integer `line_start`/`line_end`, and canonical `internal_type`.
+  Duplicated file records/fingerprints, malformed findings, mixed identity,
+  missing stages, or a different corpus digest are reported as errors.
+
+A hand-review document uses `schema_version: detection-adjudications-v1`, the
+same `corpus_sha256`, and an `observations` array. Each review requires
+`observation_id`, `verdict` (`true`, `false`, or `uncertain`), `reviewer`, `source`,
+and `sampling_unit`. Use the ID emitted by the report: it hashes the entire
+finding, source-file digest, repository/ref, and system object. Changing any
+of those invalidates the review rather than silently reusing it. Duplicate,
+stale, or conflicting judgments are errors; conflicts remain uncertain.
+
+The report distinguishes:
+
+- Precision among label-confirmed or scoped-human-reviewed **accepted alerts**,
+  with its numerator/denominator and unresolved-alert count. Bounds over all
+  accepted alerts treat every unresolved judgment as false or true respectively.
+- Recall of **labeled vulnerabilities**: exact line overlap and expected class
+  are required, with one-to-one maximum matching. One broad finding cannot
+  satisfy two labels, and duplicate alerts do not automatically become extra
+  true positives. A miss requires all enabled stages to complete for that file.
+  Unscanned/failed coverage stays unknown; all-label bounds disclose its effect.
+- Labeled-file completion, missing trees/files, incomplete stages, invalid
+  observations, and language slices. This is not whole-repository coverage:
+  the label manifest does not enumerate every source file or vulnerability.
+- Two-sided 95% Wilson **IID reference** intervals, explicitly not production
+  confidence intervals: repository dependence, selection bias, and independent
+  holdout sampling have not been established. Accuracy, true negatives, and F1
+  are null, because the corpus is not exhaustively labeled and the two metrics
+  use different units. Invalid records are listed separately, not certified or
+  silently presented as valid denominator observations.
+
+`production_ready` and `release_admissible` are always false. The default CLI
+exits 2, including for perfect fixture results; `--report-only` explicitly permits
+diagnostic exit 0 without changing those fields. This check is intentionally
+not connected to production readiness or publication. To earn that integration,
+collect frozen, independently reviewed, representative holdout evidence with
+verified execution/system provenance, complete file/stage coverage, and an
+explicit sampling/cluster uncertainty plan. Digest strings assert identity but
+do not authenticate an execution. No such evidence is fabricated by this tool.

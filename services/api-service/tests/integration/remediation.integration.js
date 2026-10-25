@@ -3,11 +3,20 @@ const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const { randomUUID } = require('node:crypto');
+const { Pool } = require('pg');
 const url = new URL(process.env.DATABASE_URL || 'postgres://invalid');
 assert.ok(['postgres:', 'postgresql:'].includes(url.protocol)
   && ['127.0.0.1', 'localhost'].includes(url.hostname)
   && /^\/[a-zA-Z0-9_]+_test$/.test(url.pathname),
   'DATABASE_URL must name a disposable loopback *_test database');
+// Migrations use the disposable database owner; every workflow query uses an
+// actual non-owning, non-bypass login so these tests cannot silently skip RLS.
+const adminPool = new Pool({ connectionString: url.toString(), max: 1 });
+const runtimeRole = `mitig8it_remediation_test_${process.pid}`;
+const runtimeUrl = new URL(url);
+runtimeUrl.username = runtimeRole;
+runtimeUrl.password = 'isolated-remediation-runtime-password-32';
+process.env.DATABASE_URL = runtimeUrl.toString();
 process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'isolated-remediation-test';
 process.env.GITHUB_WEBHOOK_SECRET = 'isolated-remediation-webhook-secret';
@@ -24,9 +33,14 @@ process.env.REMEDIATION_ALLOWED_RULE_FAMILIES_JSON = '["injection"]';
 process.env.REMEDIATION_INPUT_USD_PER_MILLION_TOKENS = '3';
 process.env.REMEDIATION_OUTPUT_USD_PER_MILLION_TOKENS = '15';
 process.env.REMEDIATION_OUTBOX_MAX_ATTEMPTS = '2';
+// This suite exercises workflow/RLS behavior with synthetic verification evidence.
+// Aggregate release readiness has separate gate tests; production stays fail-closed
+// against the unchanged committed artifact.
+require('../../src/quality-release.json').remediation_release_verified = true;
 
 const { pool } = require('../../src/config/database');
 const { applyMigrations } = require('../../src/services/migrationRunner');
+const { provisionRuntimeDatabaseRole, verifyRuntimeDatabaseRole } = require('../../src/services/runtimeDatabaseRole');
 const orchestrator = require('../../src/services/prAnalysisOrchestrator');
 orchestrator.callAnalysisTier = async () => ({ findings: [] });
 orchestrator.notifyAnalysisQueued = () => {};
@@ -48,6 +62,7 @@ function resolve(scripted, payload, fallback) {
   if (typeof scripted === 'function') return scripted(payload);
   return scripted || fallback;
 }
+function sha256(text) { return crypto.createHash('sha256').update(text, 'utf8').digest('hex'); }
 githubRemediationClient.GitHubRemediationClient = class {
   async authorize(payload) {
     githubCalls.authorize += 1;
@@ -178,11 +193,21 @@ function signedWebhook(app, event, payload) {
 }
 
 before(async () => {
-  await pool.query('DROP SCHEMA public CASCADE');
-  await pool.query('CREATE SCHEMA public');
-  await applyMigrations();
+  await adminPool.query('DROP SCHEMA public CASCADE');
+  await adminPool.query('CREATE SCHEMA public');
+  await applyMigrations(undefined, adminPool);
+  const client = await adminPool.connect();
+  try {
+    await provisionRuntimeDatabaseRole(client, { role: runtimeRole, password: decodeURIComponent(runtimeUrl.password) });
+  } finally { client.release(); }
+  await verifyRuntimeDatabaseRole(pool);
 });
-after(async () => { await pool.end(); });
+after(async () => {
+  await pool.end();
+  await adminPool.query(`DROP OWNED BY "${runtimeRole}"`);
+  await adminPool.query(`DROP ROLE "${runtimeRole}"`);
+  await adminPool.end();
+});
 
 test('intake commits the job and its outbox event atomically and replays a duplicate request', async () => {
   const f = await fixture();
@@ -370,13 +395,13 @@ test('a retry under a new fencing token does not mint a second reservation', asy
 
   // Losing the lease and being reclaimed bumps the fencing token. That used to change the
   // reservation key, so every reclaimed attempt charged the installation again.
-  await pool.query('UPDATE remediation_jobs SET lease_expires_at = NOW() - INTERVAL \'1 minute\' WHERE id=$1', [jobId]);
+  await workerQuery('UPDATE remediation_jobs SET lease_expires_at = NOW() - INTERVAL \'1 minute\' WHERE id=$1', [jobId]);
   const reclaimed = await remediationDb.claimJobById(jobId, 'worker-b', 60);
   assert.ok(Number(reclaimed.fencing_token) > Number(job.fencing_token), 'the reclaim must bump the fencing token');
   const retry = await remediationDb.reserveUsage(reclaimed, 'snapshotting', 0.05);
 
   assert.equal(retry.id, first.id, 'a reclaimed attempt must reuse the stage reservation');
-  const rows = await pool.query("SELECT COUNT(*)::int AS n FROM usage_reservations WHERE job_id=$1 AND stage='snapshotting'", [jobId]);
+  const rows = await workerQuery("SELECT COUNT(*)::int AS n FROM usage_reservations WHERE job_id=$1 AND stage='snapshotting'", [jobId]);
   assert.equal(rows.rows[0].n, 1);
 });
 
@@ -391,7 +416,7 @@ test('a job that ends releases what it never spent, and the ceiling stops counti
 
   await remediationDb.completeStage(job, { state: 'inconclusive', stage: 'inconclusive', outcome: 'quota_exhausted' });
 
-  const row = await pool.query("SELECT state, actual_amount FROM usage_reservations WHERE job_id=$1", [jobId]);
+  const row = await workerQuery("SELECT state, actual_amount FROM usage_reservations WHERE job_id=$1", [jobId]);
   assert.equal(row.rows[0].state, 'released');
   assert.equal(Number(row.rows[0].actual_amount), 0);
   const after = await remediationDb.budgetSnapshot(f.installation, 2);
@@ -407,14 +432,14 @@ test('the reconciler releases reservations stranded by a job that already ended'
   const job = await remediationDb.claimJobById(jobId, 'worker-a', 60);
   await remediationDb.reserveUsage(job, 'snapshotting', 0.05);
   // The job ends without releasing, exactly as it did before this fix.
-  await pool.query("UPDATE remediation_jobs SET state='inconclusive', stage='inconclusive' WHERE id=$1", [jobId]);
-  const stranded = await pool.query("SELECT COUNT(*)::int AS n FROM usage_reservations WHERE job_id=$1 AND state='reserved'", [jobId]);
+  await workerQuery("UPDATE remediation_jobs SET state='inconclusive', stage='inconclusive' WHERE id=$1", [jobId]);
+  const stranded = await workerQuery("SELECT COUNT(*)::int AS n FROM usage_reservations WHERE job_id=$1 AND state='reserved'", [jobId]);
   assert.equal(stranded.rows[0].n, 1);
 
   const summary = await reconciler.runReconciliation();
 
   assert.equal(summary.usage.released, 1);
-  const cleared = await pool.query("SELECT state FROM usage_reservations WHERE job_id=$1", [jobId]);
+  const cleared = await workerQuery("SELECT state FROM usage_reservations WHERE job_id=$1", [jobId]);
   assert.equal(cleared.rows[0].state, 'released');
   const budget = await remediationDb.budgetSnapshot(f.installation, 2);
   assert.equal(budget.reserved, 0);
@@ -601,9 +626,14 @@ test('one automatic job is queued per head after analysis, it is claimable witho
     `INSERT INTO remediation_candidates (job_id,installation_id,repository_id,candidate_version,finding_snapshot_ids,artifact_digest,context_manifest_digest,file_manifest,preview,verification_level)
      VALUES ($1,$2,$3,1,$4,$5,$6,$7,$8,'independent_sandbox')`,
     [first.job_id, f.installation, f.repo, [open], 'a'.repeat(64), 'c'.repeat(64),
-      JSON.stringify({ verified_tree_oid: 'f'.repeat(40), files: [{ path: 'src/app.js', contents_base64: Buffer.from(fixed).toString('base64') }] }),
-      JSON.stringify({ changes: [{ path: 'src/app.js', original, replacement: fixed, unified_diff: '@@ -3 +3 @@\n-old\n+new' }], rationale: 'Parameterize the query.',
-        reasoning: { intended_behavior: 'Same row for the same id.' }, evidence: { status: 'passed', evidence_digest: 'e'.repeat(64), generated_tests: [{ path: 'tests/orders.regression.test.js' }], limitations: [] } })]
+      JSON.stringify({ verified_tree_oid: 'f'.repeat(40), files: [{ path: 'src/app.js', contents_base64: Buffer.from(fixed).toString('base64'), base_sha256: sha256(original), new_sha256: sha256(fixed) }] }),
+      JSON.stringify({ changes: [{ path: 'src/app.js', original, replacement: fixed, base_sha256: sha256(original), new_sha256: sha256(fixed), unified_diff: '@@ -3 +3 @@\n-old\n+new' }], rationale: 'Parameterize the query.',
+        reasoning: { intended_behavior: 'Same row for the same id.' }, evidence: { status: 'passed', verification_level: 'independent_sandbox', verified_tree_oid: 'f'.repeat(40), evidence_digest: 'e'.repeat(64), generated_tests: [{ path: 'tests/orders.regression.test.js' }], limitations: [] } })]
+  );
+  await workerQuery(
+    `INSERT INTO verification_runs (job_id,installation_id,repository_id,candidate_digest,original_tree_sha,candidate_tree_sha,base_sha,verifier_identity,policy_version,outcome,evidence_digest,coverage_gaps,limitations)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'integration-verifier','v1','passed',$8,'[]','[]')`,
+    [first.job_id, f.installation, f.repo, 'a'.repeat(64), f.head, 'f'.repeat(40), f.base, 'e'.repeat(64)]
   );
   await workerQuery(`UPDATE remediation_jobs SET state='ready', stage='ready', state_version=state_version+1 WHERE id=$1`, [first.job_id]);
   const readyJob = (await workerQuery('SELECT * FROM remediation_jobs WHERE id=$1', [first.job_id])).rows[0];
@@ -654,9 +684,14 @@ test('a second completed analysis on the same head reuses the ready job and repu
     `INSERT INTO remediation_candidates (job_id,installation_id,repository_id,candidate_version,finding_snapshot_ids,artifact_digest,context_manifest_digest,file_manifest,preview,verification_level)
      VALUES ($1,$2,$3,1,$4,$5,$6,$7,$8,'independent_sandbox')`,
     [queued.job_id, f.installation, f.repo, [open], 'a'.repeat(64), 'c'.repeat(64),
-      JSON.stringify({ verified_tree_oid: 'f'.repeat(40), files: [{ path: 'src/app.js', contents_base64: Buffer.from(fixed).toString('base64') }] }),
-      JSON.stringify({ changes: [{ path: 'src/app.js', original, replacement: fixed, unified_diff: '@@ -3 +3 @@\n-old\n+new' }],
-        reasoning: { intended_behavior: 'Same row for the same id.' }, evidence: { status: 'passed', limitations: [] } })]
+      JSON.stringify({ verified_tree_oid: 'f'.repeat(40), files: [{ path: 'src/app.js', contents_base64: Buffer.from(fixed).toString('base64'), base_sha256: sha256(original), new_sha256: sha256(fixed) }] }),
+      JSON.stringify({ changes: [{ path: 'src/app.js', original, replacement: fixed, base_sha256: sha256(original), new_sha256: sha256(fixed), unified_diff: '@@ -3 +3 @@\n-old\n+new' }],
+        reasoning: { intended_behavior: 'Same row for the same id.' }, evidence: { status: 'passed', verification_level: 'independent_sandbox', verified_tree_oid: 'f'.repeat(40), evidence_digest: 'e'.repeat(64), limitations: [] } })]
+  );
+  await workerQuery(
+    `INSERT INTO verification_runs (job_id,installation_id,repository_id,candidate_digest,original_tree_sha,candidate_tree_sha,base_sha,verifier_identity,policy_version,outcome,evidence_digest,coverage_gaps,limitations)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'integration-verifier','v1','passed',$8,'[]','[]')`,
+    [queued.job_id, f.installation, f.repo, 'a'.repeat(64), f.head, 'f'.repeat(40), f.base, 'e'.repeat(64)]
   );
   await workerQuery(`UPDATE remediation_jobs SET state='ready', stage='ready' WHERE id=$1`, [queued.job_id]);
 

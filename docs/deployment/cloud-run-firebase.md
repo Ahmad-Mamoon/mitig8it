@@ -1,6 +1,9 @@
 # Deployment Guide
 
-Production deployment is driven by GitHub Actions. The deploy workflows run after the `CI` workflow succeeds on `main`, or manually through `workflow_dispatch`.
+Production deployment is driven by the manual `Deploy production` workflow. It refuses
+to start unless the exact selected commit already has a successful `CI` run, then deploys
+the API, internal services, an authenticated cross-service smoke, and the frontend in
+that order. The component workflows remain available for deliberate manual recovery.
 
 ## Targets
 
@@ -12,21 +15,21 @@ Production deployment is driven by GitHub Actions. The deploy workflows run afte
 | Analysis service | Cloud Run `codesentry-analysis` | `.github/workflows/deploy-analysis-cloudrun.yml` |
 | Remediation service | Cloud Run `codesentry-remediation` | `.github/workflows/deploy-remediation-cloudrun.yml` |
 
-Backend images are pushed to Google Artifact Registry. Runtime secrets are injected from GCP Secret Manager and GitHub Actions secrets.
-
-The remediation workflow is the one exception to the CI gate: it triggers on a push to `main` touching `services/remediation-service/**` or the workflow file, plus `workflow_dispatch`. It deploys a single service in the single-instance development mode and grants no IAM; `roles/run.invoker` for the API runtime service account must be granted out of band.
+Backend images are pushed to Google Artifact Registry. Runtime secrets are injected from
+GCP Secret Manager. GitHub Actions holds deployment credentials only.
 
 ## Release Flow
 
-1. A push lands on `main`.
-2. `CI` runs security scans, tests, audits, and Docker builds.
-3. Each deploy workflow starts only if `CI` succeeded.
-4. Each workflow path-filters changes and skips if its component did not change.
-5. Backend workflows authenticate to Google Cloud with Workload Identity Federation.
-6. Backend workflows build and push service images to Artifact Registry.
-7. The API workflow runs database migrations from the release image.
-8. Cloud Run or Firebase Hosting is deployed.
-9. Each workflow verifies the deployed service or public frontend URL.
+1. A commit lands and `CI` runs security scans, tests, audits, and image builds.
+2. An operator dispatches `Deploy production` for that exact commit.
+3. The workflow verifies that commit has a successful `CI` run.
+4. The API deploy runs migrations with the migration credential, provisions and verifies
+   the restricted runtime role, and deploys with only the runtime credential.
+5. GitHub, analysis, and remediation deploy from the same commit. Production remediation
+   selects the isolated Cloud Run Job driver and must pass its signed live-release check.
+6. `/internal/dependencies` proves authenticated API-to-analysis and API-to-GitHub
+   application RPCs against the deployed revisions.
+7. Only after all backend gates pass is the frontend deployed and smoke-tested.
 
 Each Cloud Run workflow has its own `cloudrun-deploy-${{ github.workflow }}` concurrency group with `cancel-in-progress: false`, so repeat deploys for the same component are serialized.
 
@@ -53,13 +56,9 @@ Frontend variables:
 ## Required GitHub Repository Secrets
 
 - `FIREBASE_TOKEN`
-- `CODESENTRY_INTERNAL_SECRET`
-- `CODESENTRY_WEBHOOK_SECRET`
+- `GCP_SA_KEY` only when Workload Identity Federation is unavailable
 
-`CODESENTRY_INTERNAL_SECRET` is deployed as:
-
-- `GITHUB_SERVICE_INTERNAL_SECRET` on the API and GitHub service.
-- `ANALYSIS_SERVICE_INTERNAL_SECRET` on the analysis service.
+Application credentials do not belong in GitHub Actions secrets.
 
 ## Required GCP Secret Manager Secrets
 
@@ -67,22 +66,26 @@ API service:
 
 - `codesentry-jwt-secret`
 - `codesentry-encryption-key`
-- `codesentry-database-url`
+- `codesentry-database-url` (migration/provisioning identity; never mounted at runtime)
+- `codesentry-database-runtime-url` (restricted API runtime identity)
 - `codesentry-github-app-id`
 - `codesentry-github-app-private-key`
 - `codesentry-webhook-secret`
 - `codesentry-github-client-id`
 - `codesentry-github-client-secret`
+- `codesentry-internal-secret`
 
 GitHub service:
 
-- `codesentry-database-url`
 - `codesentry-github-app-id`
 - `codesentry-github-app-private-key`
+- `codesentry-internal-secret`
+- `codesentry-webhook-secret`
 
 Analysis service:
 
 - `codesentry-gemini-api-key`
+- `codesentry-internal-secret`
 
 Remediation service, the four repair secrets:
 
@@ -107,7 +110,9 @@ API service deploys with:
 - `ANALYSIS_SERVICE_URL=${CODESENTRY_ANALYSIS_URL}`
 - `GITHUB_CALLBACK_URL=${CODESENTRY_FRONTEND_URL}/auth/github/callback`
 - `GITHUB_APP_SLUG=mitig8it`
-- `GITHUB_SERVICE_INTERNAL_SECRET=${CODESENTRY_INTERNAL_SECRET}`
+- `DATABASE_URL` from `codesentry-database-runtime-url`
+- `GITHUB_SERVICE_INTERNAL_SECRET` and `ANALYSIS_SERVICE_INTERNAL_SECRET` from
+  `codesentry-internal-secret`
 
 The API is a two-container service. Alongside the application container (`app`) runs
 the Google Managed Service for Prometheus sidecar (`collector`), which scrapes the
@@ -149,61 +154,74 @@ GitHub service deploys with:
 
 - `NODE_ENV=production`
 - `FRONTEND_URL=${CODESENTRY_FRONTEND_URL}`
-- `GITHUB_SERVICE_INTERNAL_SECRET=${CODESENTRY_INTERNAL_SECRET}`
-- `WEBHOOK_SECRET=${CODESENTRY_WEBHOOK_SECRET}`
+- `GITHUB_SERVICE_INTERNAL_SECRET` from `codesentry-internal-secret`
+- `WEBHOOK_SECRET` from `codesentry-webhook-secret`
 
 Analysis service deploys with:
 
 - `FRONTEND_URL=${CODESENTRY_FRONTEND_URL}`
-- `ANALYSIS_SERVICE_INTERNAL_SECRET=${CODESENTRY_INTERNAL_SECRET}`
+- `ANALYSIS_SERVICE_INTERNAL_SECRET` from `codesentry-internal-secret`
 
-Remediation service deploys in single-instance development mode with `--max-instances 1`, `--min-instances 0`, `--concurrency 1`, `--memory 1Gi`, `--cpu 1`, `--timeout 900`, `--port 8002`, `--no-allow-unauthenticated`, and:
+Remediation control-plane service deploys as a single instance with `--max-instances 1`,
+`--min-instances 0`, `--memory 1Gi`, `--cpu 1`, `--timeout 900`, `--port 8002`, and
+`--no-allow-unauthenticated`. Production releases select `SANDBOX_DRIVER=cloud_run_job`;
+direct manual recovery defaults to preserving the currently deployed driver. See the
+[sandbox release runbook](../runbooks/sandbox-cloud-run-job.md) for its live evidence gate.
 
 - `REMEDIATION_EXECUTION_BACKEND=local`
 - `REMEDIATION_LOCAL_STATE_DIR=/tmp/remediation`
 - `REMEDIATION_WORKER_INPROCESS=true`
 - `REMEDIATION_WORKER_POLL_SECONDS=2`
 - `SANDBOX_BROKER_MODE=inprocess`
-- `SANDBOX_DRIVER=local`
+- `SANDBOX_DRIVER=cloud_run_job` for the ordered production release
 - `SANDBOX_LOCAL_WORKSPACE_ROOT=/tmp/sandbox`
 - `SANDBOX_NETWORK_POLICY_ATTESTED=false`
 - `SANDBOX_NODE_LIMITS_ATTESTED=false`
 - `OTEL_SERVICE_NAME=remediation-service`
 
-There is no separate worker Deployment and no separate broker in this mode; the durable worker runs as an asyncio task in the same process and the broker is in-process over the local subprocess driver. No `OTEL_EXPORTER_OTLP_ENDPOINT` is set, so tracing is inert. The execution store is a per-instance SQLite file under `/tmp` and does not survive a revision or an instance replacement. Every result carries `development_unverified`, which the API presents only when `REMEDIATION_ALLOW_DEVELOPMENT_VERIFICATION=true`.
+There is no separate worker Deployment or broker: the durable worker runs in the service
+process and the broker is in-process. The execution store remains per-instance SQLite
+under `/tmp`, so control-plane durability and a separate broker trust boundary are still
+known production gaps. Publication remains blocked by the quality gate until independent
+repair-verification evidence is present.
 
 The remediation feature flags (`REMEDIATION_ENABLED`, `REMEDIATION_GENERATE_ENABLED`, `REMEDIATION_PUBLISH_ENABLED`, `REMEDIATION_ALLOW_DEVELOPMENT_VERIFICATION`, `REMEDIATION_SERVICE_URL`, `REMEDIATION_SERVICE_AUDIENCE`) are set on the API service out of band, not by any workflow. The full list is in [the remediation runbook](../runbooks/remediation.md).
 
 ## Database Migrations
 
-The API deployment is responsible for production database migrations:
+The API deployment uses `codesentry-database-url${SECRET_SUFFIX}` only for migrations
+and role provisioning. It then verifies a separate runtime login from
+`codesentry-database-runtime-url${SECRET_SUFFIX}` and mounts only that credential into
+the API. The GitHub gRPC deployment does not mount a database credential.
+
+The equivalent administrative sequence is:
 
 ```text
-docker run --rm \
-  -e DATABASE_URL="$DATABASE_URL" \
-  -e NODE_ENV=production \
-  "$IMAGE" \
-  npm run db:migrate
+DATABASE_URL="$DATABASE_MIGRATION_URL" npm run db:migrate
+npm run db:provision-runtime
+npm run db:verify-runtime
 ```
 
 Do not rely on service startup to mutate production schema. Keep schema changes in the API migration path and verify them before deployment.
+Both URLs must be supplied securely to the deployment runner; `DATABASE_URL` is the
+restricted login for the latter two commands. See the [runtime-role runbook](../runbooks/runtime-database-role.md)
+before the first deployment: missing or elevated runtime credentials stop deployment
+and production startup.
 
-## Path Filters
+## Release scope
 
-Deploy workflows skip unchanged components:
-
-- API deploys for changes under `services/api-service/`, `proto/`, or its workflow file.
-- GitHub service deploys for changes under `services/github-service/`, `proto/`, or its workflow file.
-- Analysis service deploys for changes under `services/analysis-service/`, `proto/`, or its workflow file.
-- Frontend deploys for changes under `frontend/`, `firebase.json`, or its workflow file.
-
-Manual `workflow_dispatch` bypasses these filters and deploys the selected component.
+An ordered environment release deploys every component from one exact commit. This costs
+more than path filtering, but prevents a mixed-version release across RPC contracts,
+secrets, migrations, and the public frontend. Component workflows are manual escape
+hatches and should be used only for reviewed recovery.
 
 ## Smoke Checks
 
 - API: Cloud Run service URL + `/health`
 - GitHub service: Cloud Run gRPC startup/liveness probes plus service URL verification
 - Analysis service: Cloud Run gRPC startup/liveness probes plus service URL verification
+- Internal boundary: API `/internal/dependencies` calls authenticated application-level
+  health RPCs on both gRPC services and must report both `ok`
 - Frontend: `CODESENTRY_FRONTEND_URL` when configured
 
 ## Analysis Queue Wakeup
@@ -216,6 +234,9 @@ API_URL="$(gcloud run services describe codesentry-api \
   --region "$GCP_REGION" \
   --format='value(status.url)')"
 
+INTERNAL_SECRET="$(gcloud secrets versions access latest \
+  --project "$GCP_PROJECT_ID" --secret codesentry-internal-secret)"
+
 gcloud scheduler jobs create http mitig8it-analysis-queue-tick \
   --project "$GCP_PROJECT_ID" \
   --location "$GCP_REGION" \
@@ -225,12 +246,14 @@ gcloud scheduler jobs create http mitig8it-analysis-queue-tick \
   --headers="x-internal-secret=${CODESENTRY_INTERNAL_SECRET}"
 ```
 
-The endpoint returns current queue stats and requires `x-internal-secret`. Keep the scheduler secret aligned with `GITHUB_SERVICE_INTERNAL_SECRET` on the API service.
+The endpoint returns current queue stats and requires `x-internal-secret`. The scheduler
+must read the same Secret Manager value mounted as `GITHUB_SERVICE_INTERNAL_SECRET`.
 
 ## Operational Notes
 
 - Keep Cloud Run service URLs aligned with the GitHub App callback and webhook configuration.
-- Keep `CODESENTRY_INTERNAL_SECRET` consistent across API, GitHub service, and analysis service.
+- Keep `codesentry-internal-secret` consistent across API, GitHub, analysis, the internal
+  smoke, and any scheduler that calls an internal API route.
 - The API's metrics are collected. A managed Prometheus sidecar in the same instance scrapes a loopback listener every 30 seconds and writes to Cloud Monitoring, where the alert policies in `infrastructure/monitoring/` read them; the public `/metrics` route still requires `x-internal-secret`. The github and analysis services are still unscraped, and there is still no trace export: no deploy workflow sets `OTEL_EXPORTER_OTLP_ENDPOINT`.
 - The API keeps one instance warm by default and runs with `--no-cpu-throttling`. The github, analysis and remediation services still scale to zero, so the first call into them after an idle period pays a cold start; the API's start-up warm-up pings them so that cost is paid before the first webhook rather than during it. Cloud Scheduler still wakes the analysis queue.
 - A staging environment exists in the workflows but not in the cloud. `deploy-staging.yml` deploys every service to a `-staging` name on a push to the `staging` branch; the secrets, database branch, GitHub App and Firebase site it needs are one-time owner steps in [staging.md](staging.md).

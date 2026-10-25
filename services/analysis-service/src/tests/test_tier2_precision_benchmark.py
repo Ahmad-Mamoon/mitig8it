@@ -44,6 +44,20 @@ def _coverage_rule_ids() -> list[str]:
 
 COVERAGE_RULE_IDS = _coverage_rule_ids()
 
+# The fixture records the raw reconciliation contract from before the stricter
+# evidence gate. Keep that detector truth intact; publication is a separate claim.
+# The newer pwn-request shape remains measurable but cannot supersede an admitted
+# older rule in a response while its independent holdout evidence is missing.
+CURRENT_POSTED_EXPECTATIONS = {
+    "subsumption.persist-credentials-folded-into-untrusted-checkout": [{
+        "rule": "cwe-829.gha-untrusted-checkout-privileged-trigger",
+        "merged_rule_ids": [
+            "opengrep.cwe-829.gha-untrusted-checkout-privileged-trigger",
+            "opengrep.cwe-522.gha-persist-credentials-on-untrusted-checkout",
+        ],
+    }],
+}
+
 
 def _cases() -> list[dict]:
     document = json.loads(CASES_PATH.read_text(encoding="utf-8"))
@@ -168,7 +182,7 @@ class TestWhatIsPosted:
     @pytest.mark.parametrize("case", [c for c in _cases() if c.get("posted")], ids=lambda c: c["id"])
     def test_the_expected_findings_reach_the_reviewer(self, case, scan_findings):
         posted = self._posted(scan_findings[case["path"]])
-        expected = case["posted"]
+        expected = CURRENT_POSTED_EXPECTATIONS.get(case["id"], case["posted"])
 
         assert [finding["rule_id"] for finding in posted] == [
             f"opengrep.{entry['rule']}" for entry in expected
@@ -187,13 +201,14 @@ class TestWhatIsPosted:
             assert finding["evidence_details"]["extra"]["merged_rule_ids"] == entry["merged_rule_ids"]
 
     @pytest.mark.parametrize("case", [c for c in _cases() if c.get("posted")], ids=lambda c: c["id"])
-    def test_every_rule_that_matched_is_named_by_something_posted(self, case, scan_findings):
-        """Nothing is folded away silently.
+    def test_every_admitted_rule_that_matched_is_named_by_something_posted(self, case, scan_findings):
+        """Nothing admitted is folded away silently; withheld evidence is not published.
 
         A rule dropped by the reconciliation still has to appear in a survivor's
         `merged_rule_ids`, because the evidence is the only record that it matched.
         """
-        matched = {finding["rule_id"] for finding in scan_findings[case["path"]]}
+        admitted, withheld = partition_by_posting_policy(scan_findings[case["path"]])
+        matched = {finding["rule_id"] for finding in admitted}
         posted = self._posted(scan_findings[case["path"]])
         accounted = {
             rule_id
@@ -201,6 +216,16 @@ class TestWhatIsPosted:
             for rule_id in (finding.get("merged_rule_ids") or [finding["rule_id"]])
         }
         assert matched <= accounted, f"{case['id']}: {sorted(matched - accounted)} vanished"
+        assert not {finding["rule_id"] for finding in withheld} & accounted
+
+    @pytest.mark.parametrize("case", [c for c in _cases() if c.get("posted")], ids=lambda c: c["id"])
+    def test_raw_reconciliation_fixture_still_holds_without_claiming_publication(self, case, scan_findings):
+        reconciled = cluster_findings(classify_findings(scan_findings[case["path"]]))
+        assert [finding["rule_id"] for finding in reconciled] == [
+            f"opengrep.{entry['rule']}" for entry in case["posted"]
+        ]
+        for finding, entry in zip(reconciled, case["posted"]):
+            assert finding.get("merged_rule_ids") == entry["merged_rule_ids"]
 
 
 class TestNoFindingLines:

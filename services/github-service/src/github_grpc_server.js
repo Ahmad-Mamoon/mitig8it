@@ -1,4 +1,5 @@
 const grpc = require('@grpc/grpc-js');
+const crypto = require('crypto');
 const logger = require('./utils/logger');
 const requestContext = require('./utils/requestContext');
 const githubPb = require('./grpc/generated/github_pb');
@@ -19,6 +20,26 @@ const {
 
 const HEALTH_SERVING_STATUS = 1;
 const OPERATION_STATUS_METADATA_KEY = 'x-operation-status';
+
+function withInternalAuth(handler) {
+  return (call, callback) => {
+    const expected = process.env.GITHUB_SERVICE_INTERNAL_SECRET;
+    if (!expected) {
+      callback({ code: grpc.status.UNAVAILABLE, message: 'Internal service auth is not configured' });
+      return;
+    }
+    const values = call.metadata.get('x-internal-secret');
+    const provided = values.length === 1 && typeof values[0] === 'string' ? values[0] : '';
+    const expectedBuffer = Buffer.from(expected);
+    const providedBuffer = Buffer.from(provided);
+    if (expectedBuffer.length !== providedBuffer.length ||
+        !crypto.timingSafeEqual(expectedBuffer, providedBuffer)) {
+      callback({ code: grpc.status.UNAUTHENTICATED, message: 'Unauthorized' });
+      return;
+    }
+    return handler(call, callback);
+  };
+}
 
 function readVarint(buffer, offset) {
   let result = 0;
@@ -446,7 +467,12 @@ const githubService = {
 
 function createServer() {
   const server = new grpc.Server();
-  server.addService(githubGrpc.GitHubServiceService, githubService);
+  // Protect the complete application service at registration so future handlers
+  // cannot omit auth. Only the separate, data-free standard health probe is open.
+  const authenticatedService = Object.fromEntries(
+    Object.entries(githubService).map(([name, handler]) => [name, withInternalAuth(handler)])
+  );
+  server.addService(githubGrpc.GitHubServiceService, authenticatedService);
   server.addService(standardHealthService, standardHealthHandlers);
   return server;
 }

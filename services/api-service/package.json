@@ -13,10 +13,16 @@
     "test:integration:remediation": "NODE_ENV=test node --test tests/integration/remediation.integration.js",
     "test:integration:purge": "NODE_ENV=test node --test tests/integration/installation-purge.integration.js",
     "test:integration:transport": "NODE_ENV=test node --test tests/integration/analysis-transport.integration.js",
+    "test:integration:runtime-role": "NODE_ENV=test node --test tests/integration/runtime-role.integration.js",
     "db:migrate": "node src/scripts/runMigrations.js",
-    "db:verify": "node src/scripts/verifyMigrations.js"
+    "db:verify": "node src/scripts/verifyMigrations.js",
+    "db:provision-runtime": "node src/scripts/provisionRuntimeRole.js",
+    "db:verify-runtime": "node src/scripts/verifyRuntimeRole.js"
   },
   "type": "commonjs",
+  "engines": {
+    "node": ">=22"
+  },
   "dependencies": {
     "@grpc/grpc-js": "^1.14.4",
     "@opentelemetry/api": "1.9.1",

@@ -36,15 +36,15 @@ driver needs no channel into it. The check's argv, its timeout, the object names
 sha256, and a per-execution HMAC nonce travel as container overrides.
 
 Inside the task, `job_entrypoint.py` downloads and digest-verifies its archive, extracts it,
-clears `/etc/resolv.conf`, drops to a separate unprivileged user that holds none of the task's
+drops to a separate unprivileged user that holds none of the task's
 credentials, and moves that user into a private network namespace where nothing but loopback
 exists. It then measures, from the check's own user and context, whether the metadata server,
 a public address, and DNS are reachable, and reports each measurement.
 
-This driver refuses to call anything verified unless every one of those measurements came
-back an explicit `false`. A probe that could not run, or that reached its target, ends the
-verification as `sandbox_network_not_denied`: the sandbox did not do what the level claims,
-so the level is not claimed. What the probes do *not* establish is spelled out in
+The task refuses to execute repository code unless namespace creation succeeded for the
+check's user and every measurement came back an explicit `false`. This driver independently
+refuses completed evidence missing either condition as `sandbox_network_not_denied`.
+What the probes do *not* establish is spelled out in
 `docs/runbooks/sandbox-cloud-run-job.md`; in short, they are a measurement of one moment from
 one process, not a proof about the whole task lifetime, and this driver never claims the
 read-only root filesystem or the gVisor runtime class the production level requires.
@@ -84,6 +84,7 @@ from .job_entrypoint import (
     MAX_CAPTURED_CHARS,
     PROBES,
     VARIANTS,
+    probes_denied,
 )
 from .runner import materialize_tree
 
@@ -423,7 +424,8 @@ class CloudRunJobDriver:
         duration = int(document.get("duration_ms") or 0)
         if document.get("completed") is not True:
             reason = str(document.get("reason_code") or "sandbox_check_incomplete")[:120]
-            return self._incomplete(reason, duration, network_probes=probes, job_execution=runner.get("job_execution"))
+            return self._incomplete(reason, duration, network_probes=probes, job_execution=runner.get("job_execution"),
+                                    network_namespace=runner.get("network_namespace"))
         output = str(document.get("output") or "")[:MAX_CAPTURED_CHARS]
         exit_code = document.get("exit_code")
         if not isinstance(exit_code, int):
@@ -438,6 +440,7 @@ class CloudRunJobDriver:
             "duration_ms": duration,
             "scanner_findings": parse_scanner_findings(output) if check["kind"] == "scanner" else None,
             "network_probes": probes,
+            "network_namespace": runner.get("network_namespace"),
             "job_execution": runner.get("job_execution"),
         }
 
@@ -449,6 +452,8 @@ class CloudRunJobDriver:
                 outcome = record.get(variant) or {}
                 if outcome.get("completed") is not True:
                     continue
+                if outcome.get("network_namespace") != "applied":
+                    return f"{record['check_id']}:{variant}:network_namespace"
                 probes = outcome.get("network_probes") or {}
                 for target in PROBE_TARGETS:
                     probe = probes.get(target)
@@ -537,7 +542,14 @@ class CloudRunJobDriver:
                 self._record_identity(digest, {**identity, "network": "unknown"})
                 return {"outcome": "inconclusive", "reason_code": "sandbox_network_not_denied", "checks": []}
 
-            self._record_identity(digest, identity)
+            # Missing/failed tasks do not prove network denial. Preserve their individual
+            # refusal reasons while leaving the runner's network claim unknown.
+            measured_denial = bool(records) and all(
+                record.get(variant, {}).get("network_namespace") == "applied"
+                and probes_denied(record.get(variant, {}).get("network_probes"))
+                for record in records for variant in VARIANTS
+            )
+            self._record_identity(digest, {**identity, "network": "deny" if measured_denial else "unknown"})
             return {"outcome": aggregate_outcome(records), "checks": records}
         except (KeyError, TypeError, ValueError) as error:
             raise CloudRunJobExecutionError("Cloud Run job sandbox execution failed") from error

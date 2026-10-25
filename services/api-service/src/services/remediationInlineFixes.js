@@ -4,8 +4,52 @@ const findingOutcomes = require('../db/findingOutcomes');
 const policy = require('./remediationPolicy');
 const logger = require('../utils/logger');
 const { GitHubRemediationClient } = require('./githubRemediationClient');
+const { createHash } = require('crypto');
 
 const MAX_DIFF_CHARS = 6000;
+
+function verifiedRepairProblem(candidate) {
+  const evidence = candidate.preview?.evidence || {};
+  if (evidence.status !== 'passed' || !/^(?:sha256:)?[a-f0-9]{64}$/i.test(evidence.evidence_digest || '')) {
+    return 'The complete repair has no passing independent verification evidence.';
+  }
+  if (!['independent_sandbox', 'isolated_job'].includes(candidate.verification_level)
+      || evidence.verification_level !== candidate.verification_level) {
+    return 'The repair was not verified by an independently executed sandbox check.';
+  }
+  if ((evidence.limitations || []).some((item) => /syntax.*(?:failed|unavailable|not run|skipped)|undefined_name|missing_dependency|dependency_not_available/i.test(String(item)))) {
+    return 'Syntax or dependency verification of the complete repair was incomplete.';
+  }
+  const changes = candidate.preview?.changes;
+  const manifest = candidate.file_manifest;
+  if (!Array.isArray(changes) || !changes.length || !Array.isArray(manifest?.files)
+      || changes.length !== manifest.files.length
+      || !/^[a-f0-9]{40}$/i.test(manifest.verified_tree_oid || '')
+      || manifest.verified_tree_oid !== evidence.verified_tree_oid) {
+    return 'The complete verified file manifest is unavailable.';
+  }
+  const paths = new Set();
+  for (const change of changes) {
+    const file = manifest.files.find((item) => item.path === change.path);
+    if (paths.has(change.path) || !file || typeof change.original !== 'string' || typeof change.replacement !== 'string'
+        || typeof file.contents_base64 !== 'string') return 'The complete verified file manifest is unavailable.';
+    paths.add(change.path);
+    const sha = (text) => createHash('sha256').update(text, 'utf8').digest('hex');
+    const contents = Buffer.from(file.contents_base64, 'base64');
+    if (contents.toString('base64') !== file.contents_base64
+        || !contents.equals(Buffer.from(change.replacement, 'utf8'))
+        || sha(change.original) !== file.base_sha256 || sha(change.replacement) !== file.new_sha256) {
+      return 'The proposed replacement does not match the complete independently verified repair.';
+    }
+    // GitHub line replacements cannot safely express a change of file encoding,
+    // line endings, or final-newline state.
+    if (change.original.includes('\r') || change.replacement.includes('\r')
+        || change.original.endsWith('\n') !== change.replacement.endsWith('\n')) {
+      return 'The complete repair changes file line endings and cannot be applied as a suggestion.';
+    }
+  }
+  return '';
+}
 
 function splitLines(text) {
   const normalized = String(text ?? '').replace(/\r\n/g, '\n');
@@ -13,10 +57,6 @@ function splitLines(text) {
   const lines = normalized.split('\n');
   if (lines[lines.length - 1] === '') lines.pop();
   return lines;
-}
-
-function countHunks(unifiedDiff) {
-  return (String(unifiedDiff || '').match(/^@@ /gm) || []).length;
 }
 
 // Every contiguous region of the original that the replacement changes, as hunks on the
@@ -267,7 +307,12 @@ function foldSameLineProven(proven) {
   for (const item of proven) {
     if (!item.section.hunk) continue;
     const list = byPath.get(item.section.path) || [];
-    list.push({ ...item, range: hunkRange(item.section.hunk) });
+    // A spanning atomic edit may include imports near another finding. That is
+    // not proof that it repairs that different finding.
+    list.push({ ...item, range: {
+      start: Number(item.finding.line_start) || 0,
+      end: Number(item.finding.line_end) || Number(item.finding.line_start) || 0,
+    } });
     byPath.set(item.section.path, list);
   }
   const folded = new Set();
@@ -294,17 +339,6 @@ function foldSameLineProven(proven) {
   return folded;
 }
 
-// The region a finding's comment carries: the one on the finding's line, else the nearest.
-function primaryRegion(regions, findingLine) {
-  const line = Number(findingLine) || 0;
-  const containing = regions.find((region) => region.start_line <= line && line <= region.end_line);
-  if (containing) return containing;
-  return regions.reduce((best, region) => {
-    const distance = Math.min(Math.abs(region.start_line - line), Math.abs(region.end_line - line));
-    return !best || distance < best.distance ? { region, distance } : best;
-  }, null).region;
-}
-
 // One section per candidate and per finding it proves, one line per finding that a
 // proven finding's candidate covers on the same lines, and one line per remaining
 // finding the repair service reported as skipped. The candidate's change in the
@@ -319,12 +353,17 @@ function buildSections({ job, candidates = [], findings = [] }) {
   const proven = [];
   for (const candidate of candidates) {
     if (candidate.rejection_reason) continue;
+    const problem = verifiedRepairProblem(candidate);
     const changes = Array.isArray(candidate.preview?.changes) ? candidate.preview.changes : [];
     const evidence = candidate.preview?.evidence || {};
     const limitations = Array.isArray(evidence.limitations) ? evidence.limitations.map(String) : [];
     for (const findingId of candidate.finding_snapshot_ids || []) {
       const finding = byId.get(findingId);
       if (!finding?.fingerprint) continue;
+      if (problem) {
+        sections.push({ ...emptySection(finding), skipped_reason: problem });
+        continue;
+      }
       const change = changes.find((item) => item?.path === finding.file_path) || null;
       let hunk = null;
       let extraHunks = [];
@@ -332,12 +371,10 @@ function buildSections({ job, candidates = [], findings = [] }) {
       if (!change) reason = 'changes_other_file';
       else if (changes.length > 1) reason = 'multiple_files';
       else {
-        const regions = computeRegions(change.original, change.replacement, finding.line_start);
-        if (!regions.length) reason = 'no_line_change';
-        else {
-          hunk = primaryRegion(regions, finding.line_start);
-          extraHunks = regions.filter((region) => region !== hunk);
-        }
+        // One click must apply the exact file that was verified, including every
+        // import/helper change between the first and last edited line.
+        hunk = computeHunk(change.original, change.replacement, finding.line_start);
+        if (!hunk) reason = 'no_line_change';
       }
       const section = {
         ...emptySection(finding),
@@ -434,6 +471,9 @@ async function publishInlineFixes(jobId, options = {}) {
   if (!context) return null;
   const { job } = context;
   if (job.state !== 'ready') return { published: false, reason: 'job_not_ready' };
+  if (context.verification?.outcome !== 'passed' || context.verification?.coverage_gaps?.length) {
+    return { published: false, reason: 'verification_not_passed' };
+  }
   if (job.current_head_sha && job.current_head_sha !== job.head_sha) return { published: false, reason: 'head_moved' };
   if (job.installation_status !== 'active' || job.repository_active === false) return { published: false, reason: 'installation_or_repository_inactive' };
   const sections = await attachFindingBodies(job, buildSections(context));
@@ -450,13 +490,17 @@ async function publishInlineFixes(jobId, options = {}) {
     logger.warn('Inline fix publication was not confirmed', { job_id: job.id, state: result?.state || 'unknown', reason: result?.reason || null });
     return { published: false, reason: result?.reason || 'not_published' };
   }
-  await remediationDb.recordInlineFixesPublished(job, { headSha: job.head_sha });
+  const results = Array.isArray(result.results) ? result.results : [];
+  const offeredCandidates = new Set(results.filter((item) => item.mode === 'suggestion').map((item) => item.candidate_id).filter(Boolean));
+  const confirmed = sections.filter((section) => results.some((item) => item.finding_fingerprint === section.finding_fingerprint
+    && (item.mode === 'suggestion' || (item.mode === 'covered' && offeredCandidates.has(item.candidate_id)))
+    && (!item.candidate_id || item.candidate_id === section.candidate_id)));
+  if (confirmed.length) await remediationDb.recordInlineFixesPublished(job, { headSha: job.head_sha });
   // The outcome log is what the quality numbers are computed from; a failure to append
   // is reported and never reverts a publication that already happened on GitHub.
-  try { await recordPublishedFixOutcomes(context, sections); } catch (error) {
+  try { await recordPublishedFixOutcomes(context, confirmed); } catch (error) {
     logger.error('Published fix outcomes could not be recorded', { job_id: job.id, error: error.message });
   }
-  const results = Array.isArray(result.results) ? result.results : [];
   const unplaced = results.filter((item) => item?.mode === 'comment_not_found').length;
   const created = results.filter((item) => item?.created && item.placement === 'inline').length;
   const fallback = results.filter((item) => item?.created && item.placement === 'pull_request').length;
@@ -464,7 +508,8 @@ async function publishInlineFixes(jobId, options = {}) {
     job_id: job.id, sections: sections.length, comments_created: created, pull_request_comments_created: fallback, unplaced,
   });
   if (unplaced) logger.warn('Some verified fix sections found no finding comment and could not create one', { job_id: job.id, unplaced });
-  return { published: true, results, sections: sections.length, comments_created: created, pull_request_comments_created: fallback, unplaced };
+  return { published: confirmed.length > 0, ...(confirmed.length ? {} : { reason: 'no_verified_suggestion_published' }),
+    results, sections: sections.length, comments_created: created, pull_request_comments_created: fallback, unplaced };
 }
 
 // Every finding a published candidate proves or covers, paired with the candidate that
@@ -509,5 +554,5 @@ async function recordPublishedFixOutcomes(context, sections) {
 
 module.exports = {
   publishInlineFixes, buildSections, attachFindingBodies, computeHunk, computeRegions,
-  evidenceLines, countHunks, proofLine, sameLines, groupByOverlap, publishedFixOutcomes,
+  evidenceLines, proofLine, sameLines, groupByOverlap, publishedFixOutcomes,
 };

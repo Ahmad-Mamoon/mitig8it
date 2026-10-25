@@ -50,6 +50,20 @@ def _stage(name: str, fn) -> dict[str, Any]:
 # --- analysis -------------------------------------------------------------------------------
 
 
+def _admit_quarantined_rules_for_measurement(analysis_main: Any) -> None:
+    """Return both published and quarantined findings to the replay scorer.
+
+    Production still withholds quarantined rules. The replay worker admits the union of
+    the two declared policy sets only when explicitly requested; ``score.py`` then uses
+    the rule metadata to distinguish reviewer-visible findings from quarantined ones.
+    """
+    measured_rule_ids = frozenset(
+        set(analysis_main.PUBLICATION_RULE_IDS) | set(analysis_main.QUARANTINED_RULE_IDS)
+    )
+    analysis_main.PUBLICATION_RULE_IDS = measured_rule_ids
+    analysis_main.QUARANTINED_RULE_IDS = frozenset()
+
+
 def run_analysis(payload: dict[str, Any]) -> dict[str, Any]:
     import main as analysis_main  # noqa: PLC0415 - imported inside the child process only.
 
@@ -57,9 +71,9 @@ def run_analysis(payload: dict[str, Any]) -> dict[str, Any]:
         # A quarantined rule is withheld from a reviewer, not from a measurement. The
         # service drops its findings before returning, so a corpus run that is trying to
         # decide whether a quarantined rule has earned its way back would never see them.
-        # The policy is emptied here, in the harness, and `score.py` re-applies it from the
-        # rule files, so quarantined findings are reported separately rather than mixed in.
-        analysis_main.QUARANTINED_RULE_IDS = frozenset()
+        # The harness admits both declared policy sets and `score.py` re-applies their
+        # statuses from the rule files, so quarantined findings remain separate.
+        _admit_quarantined_rules_for_measurement(analysis_main)
 
     tier1_request = analysis_main.AnalyzePRRequest(
         repository_full_name=payload["repo"],
@@ -118,16 +132,17 @@ def _strip(result: dict[str, Any]) -> dict[str, Any]:
         trimmed["finding_count"] = len(value.get("findings", []))
         trimmed["files_analyzed"] = value.get("files_analyzed")
         trimmed["test_files_analyzed"] = value.get("test_files_analyzed")
+        # Both tiers record what they gave up on instead of failing: tier 1 its time budget,
+        # tier 2 a per-file parse error or timeout. A finding missing for one of those reasons
+        # is missing for a reason no rule diff explains, so the record keeps what the stage said.
+        if value.get("analysis_limitations"):
+            trimmed["analysis_limitations"] = value["analysis_limitations"]
     return trimmed
 
 
 # --- remediation ----------------------------------------------------------------------------
 
 SNAPSHOT_BYTE_BUDGET = 4_000_000
-
-
-class _AgentNeeded(Exception):
-    pass
 
 
 def _refusing_provider(modules: dict[str, Any], counter: dict[str, int]):

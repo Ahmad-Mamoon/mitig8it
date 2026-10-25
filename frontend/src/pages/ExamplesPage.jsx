@@ -21,7 +21,7 @@ const capabilities = [
   {
     title: 'Verified fixes',
     status: 'live',
-    description: 'Each fix proven by a generated regression test.',
+    description: 'Published only when the stated execution or static-evidence policy passes.',
   },
   {
     title: 'One-click apply',
@@ -68,7 +68,7 @@ export default function ExamplesPage() {
                 loading="lazy"
               />
             </div>
-            <figcaption className="mt-4 text-center text-sm text-neutral-500">
+            <figcaption className="mt-4 text-center text-sm text-neutral-400">
               A real finding on the pull request that introduced it.
             </figcaption>
           </figure>
@@ -76,7 +76,11 @@ export default function ExamplesPage() {
 
         {/* Capabilities */}
         <div className="mt-16 sm:mt-20">
-          <ProductSurface title="In every review" items={capabilities} />
+        <ProductSurface
+          title="What a review can contain"
+          intro="A finding may omit a suggestion when Mitig8it cannot produce evidence strong enough for the configured publication policy."
+          items={capabilities}
+        />
         </div>
 
         {/* Close */}

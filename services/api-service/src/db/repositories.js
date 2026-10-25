@@ -243,20 +243,6 @@ async function queueUrgentProfiling(repoId, pendingRetriage) {
   );
 }
 
-async function markProfileStale(repoId) {
-  await pool.query(
-    `UPDATE repositories
-     SET profile_status = CASE
-           WHEN profile_status = 'profiling' THEN profile_status
-           ELSE 'stale'
-         END,
-         profile_priority = GREATEST(profile_priority, 1),
-         profile_queued_at = NOW()
-     WHERE id = $1 AND profile_status = 'ready'`,
-    [repoId]
-  );
-}
-
 async function recoverStaleProfilingJobs(maxAgeMinutes = 30) {
   const result = await pool.query(
     `UPDATE repositories
@@ -328,6 +314,6 @@ async function getProfile(repoId) {
 
 module.exports = {
   list, getById, updateBaseline, connect, disconnect, revokeMissingAccessForInstallation,
-  queueManualReprofile, queueForProfiling, queueTopReposForProfiling, queueUrgentProfiling, markProfileStale, recoverStaleProfilingJobs,
+  queueManualReprofile, queueForProfiling, queueTopReposForProfiling, queueUrgentProfiling, recoverStaleProfilingJobs,
   claimNextProfileJob, saveProfile, markProfileFailed, getProfile,
 };

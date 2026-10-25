@@ -23,7 +23,7 @@ const TrustPage = ({
       <main>
         <section className="border-b border-neutral-800/60">
           <div className="mx-auto max-w-5xl px-4 py-16 sm:px-6 lg:px-8">
-            <p className="text-[11px] font-medium uppercase tracking-[0.25em] text-neutral-500">{eyebrow}</p>
+            <p className="text-[11px] font-medium uppercase tracking-[0.25em] text-neutral-400">{eyebrow}</p>
             <h1 className="mt-4 text-3xl font-bold tracking-tight sm:text-4xl">{title}</h1>
             <p className="mt-4 max-w-3xl text-[15px] leading-7 text-neutral-400">{intro}</p>
             {leadVisual ? (

@@ -10,6 +10,11 @@ All project Markdown documentation, except the root [README](../README.md), live
 - [GitHub Action](getting-started/github-action.md)
 - [Repository Configuration](getting-started/configuration.md)
 
+## Releasing
+
+- [Releasing](releasing.md), the versioning policy, the owner's steps, and the Marketplace answer
+- [Changelog](../CHANGELOG.md)
+
 ## Validation and design
 
 - [Validation index](validation/README.md), with the reference output of `make bench`
@@ -28,6 +33,10 @@ All project Markdown documentation, except the root [README](../README.md), live
 
 - [Observability](runbooks/observability.md)
 - [Remediation Operations](runbooks/remediation.md)
+- [Rollback](runbooks/rollback.md), how to undo a bad deploy and what a migration makes impossible
+- [Internal gRPC Authentication](runbooks/internal-grpc-auth.md), client-first rollout and service-boundary verification
+- [Runtime Database Role](runbooks/runtime-database-role.md), provisioning, credential separation, and RLS verification
+- [Cloud Run Jobs Sandbox](runbooks/sandbox-cloud-run-job.md)
 
 ## Deployment
 

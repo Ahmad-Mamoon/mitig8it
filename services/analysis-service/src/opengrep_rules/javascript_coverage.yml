@@ -34,10 +34,10 @@ rules:
   - id: cwe-89.js-query-string-concat
     patterns:
       - pattern-either:
-        - pattern: $DB.query("..." + $INPUT, ...)
-        - pattern: $DB.query("..." + $INPUT)
-        - pattern: $DB.execute("..." + $INPUT, ...)
-        - pattern: $DB.execute("..." + $INPUT)
+        - pattern: $DB.query(<... "..." + $INPUT ...>, ...)
+        - pattern: $DB.query(<... "..." + $INPUT ...>)
+        - pattern: $DB.execute(<... "..." + $INPUT ...>, ...)
+        - pattern: $DB.execute(<... "..." + $INPUT ...>)
       - pattern-not: $DB.query("..." + "...", ...)
     message: "SQL query assembled by string concatenation. Use a parameterized query"
     severity: ERROR
@@ -73,9 +73,9 @@ rules:
   - id: cwe-89.js-typeorm-where-concat
     patterns:
       - pattern-either:
-        - pattern: $Q.where("..." + $INPUT)
-        - pattern: $Q.andWhere("..." + $INPUT)
-        - pattern: $Q.orWhere("..." + $INPUT)
+        - pattern: $Q.where(<... "..." + $INPUT ...>)
+        - pattern: $Q.andWhere(<... "..." + $INPUT ...>)
+        - pattern: $Q.orWhere(<... "..." + $INPUT ...>)
         - pattern: $Q.where(`...${$INPUT}...`)
         - pattern: $Q.andWhere(`...${$INPUT}...`)
     message: "TypeORM where clause built from an interpolated string. Use a named parameter"
@@ -148,12 +148,12 @@ rules:
           - pattern-either:
             - pattern: $CP.exec(`...${$INPUT}...`, ...)
             - pattern: $CP.exec(`...${$INPUT}...`)
-            - pattern: $CP.exec("..." + $INPUT, ...)
-            - pattern: $CP.exec("..." + $INPUT)
+            - pattern: $CP.exec(<... "..." + $INPUT ...>, ...)
+            - pattern: $CP.exec(<... "..." + $INPUT ...>)
             - pattern: $CP.execSync(`...${$INPUT}...`, ...)
             - pattern: $CP.execSync(`...${$INPUT}...`)
-            - pattern: $CP.execSync("..." + $INPUT, ...)
-            - pattern: $CP.execSync("..." + $INPUT)
+            - pattern: $CP.execSync(<... "..." + $INPUT ...>, ...)
+            - pattern: $CP.execSync(<... "..." + $INPUT ...>)
           - metavariable-regex:
               metavariable: $CP
               regex: ^(?:child_process|childProcess|node_child_process|cp)$
@@ -163,12 +163,12 @@ rules:
         - pattern: require("node:child_process").execSync(`...${$INPUT}...`, ...)
         - pattern: exec(`...${$INPUT}...`, ...)
         - pattern: exec(`...${$INPUT}...`)
-        - pattern: exec("..." + $INPUT, ...)
-        - pattern: exec("..." + $INPUT)
+        - pattern: exec(<... "..." + $INPUT ...>, ...)
+        - pattern: exec(<... "..." + $INPUT ...>)
         - pattern: execSync(`...${$INPUT}...`, ...)
         - pattern: execSync(`...${$INPUT}...`)
-        - pattern: execSync("..." + $INPUT, ...)
-        - pattern: execSync("..." + $INPUT)
+        - pattern: execSync(<... "..." + $INPUT ...>, ...)
+        - pattern: execSync(<... "..." + $INPUT ...>)
     message: "Shell command assembled by interpolation. Use execFile or spawn with an argument list"
     severity: ERROR
     languages: [javascript, typescript]
@@ -229,8 +229,8 @@ rules:
     patterns:
       - pattern-either:
         - pattern: new Function(`...${$INPUT}...`)
-        - pattern: new Function("..." + $INPUT)
-        - pattern: new Function($A, "..." + $INPUT)
+        - pattern: new Function(<... "..." + $INPUT ...>)
+        - pattern: new Function($A, <... "..." + $INPUT ...>)
         - pattern: Function(`...${$INPUT}...`)
     message: "Function constructor compiles a built string. The input becomes executable code"
     severity: ERROR
@@ -251,7 +251,7 @@ rules:
     patterns:
       - pattern-either:
         - pattern: eval(`...${$INPUT}...`)
-        - pattern: eval("..." + $INPUT)
+        - pattern: eval(<... "..." + $INPUT ...>)
         - pattern: window.eval(`...${$INPUT}...`)
         - pattern: globalThis.eval(`...${$INPUT}...`)
     message: "eval of a built string. Parse the value instead of executing it"
@@ -308,6 +308,156 @@ rules:
       family: "code_injection_eval"
       confidence: "0.80"
       posting: post
+
+  # ── Language model output reaching a sink ──────────────────────────────
+  # OWASP LLM05, improper output handling. The source is the return value of a model client
+  # call in the same function, so a prompt the attacker can influence decides what reaches the
+  # sink. Measured on 12 open-source LLM applications (38,098 files): zero findings, see
+  # docs/validation/llm-output-sinks-2026-10.md.
+
+  - id: cwe-95.js-llm-output-code-execution
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+        - pattern: $C.chat.completions.create(...)
+        - pattern: $C.responses.create(...)
+        - pattern: $C.messages.create(...)
+        - pattern: $M.generateContent(...)
+        - pattern: generateText(...)
+    pattern-sinks:
+      - pattern-either:
+        - pattern: eval(...)
+        - pattern: new Function(...)
+    message: "Language model output is executed as JavaScript. A prompt the attacker influences decides what runs. Parse a structured answer and dispatch on it instead"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-95"
+      owasp: "LLM05:2025"
+      category: "code injection"
+      internal_type: "dynamic_code_execution"
+      family: "code_injection_eval"
+      confidence: "0.90"
+      analysis_scope: "taint-intraprocedural"
+      source_description: "text returned by a language model call"
+      sink_description: "eval or Function constructor"
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
+
+  - id: cwe-78.js-llm-output-shell
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+        - pattern: $C.chat.completions.create(...)
+        - pattern: $C.responses.create(...)
+        - pattern: $C.messages.create(...)
+        - pattern: $M.generateContent(...)
+        - pattern: generateText(...)
+    pattern-sinks:
+      # The receiver is named, as in cwe-78.js-exec-interpolated: `$X.exec` is also
+      # RegExp.prototype.exec, and model output is exactly what gets matched against a regex.
+      - patterns:
+        - pattern-either:
+          - pattern: exec($CMD, ...)
+          - pattern: execSync($CMD, ...)
+          - patterns:
+            - pattern-either:
+              - pattern: $CP.exec($CMD, ...)
+              - pattern: $CP.execSync($CMD, ...)
+            - metavariable-regex:
+                metavariable: $CP
+                regex: ^(?:child_process|childProcess|node_child_process|cp)$
+        - focus-metavariable: $CMD
+    message: "Language model output is run by a shell. Map the answer onto an allowlist of commands and use execFile with an argument array"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-78"
+      owasp: "LLM05:2025"
+      category: "command injection"
+      internal_type: "command_injection"
+      confidence: "0.90"
+      analysis_scope: "taint-intraprocedural"
+      source_description: "text returned by a language model call"
+      sink_description: "shell command"
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
+
+  - id: cwe-79.js-llm-output-html
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+        - pattern: $C.chat.completions.create(...)
+        - pattern: $C.responses.create(...)
+        - pattern: $C.messages.create(...)
+        - pattern: $M.generateContent(...)
+        - pattern: generateText(...)
+    pattern-sinks:
+      - pattern-either:
+        - pattern: $EL.innerHTML = $X
+        - pattern: $EL.outerHTML = $X
+        - pattern: document.write(...)
+        - pattern: "<$T dangerouslySetInnerHTML={{__html: $X}} />"
+    message: "Language model output is inserted as HTML. Text the model was steered into writing becomes script in the user's page. Render it as text, or sanitize it with DOMPurify first"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-79"
+      owasp: "LLM05:2025"
+      category: "XSS"
+      internal_type: "cross_site_scripting"
+      confidence: "0.88"
+      analysis_scope: "taint-intraprocedural"
+      source_description: "text returned by a language model call"
+      sink_description: "HTML sink"
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
+
+  - id: cwe-89.js-llm-output-sql
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+        - pattern: $C.chat.completions.create(...)
+        - pattern: $C.responses.create(...)
+        - pattern: $C.messages.create(...)
+        - pattern: $M.generateContent(...)
+        - pattern: generateText(...)
+    pattern-sinks:
+      - patterns:
+        - pattern: $DB.query($Q, ...)
+        - focus-metavariable: $Q
+    message: "Language model output is spliced into SQL text. Pass the value as a bound parameter, and never let the model write the query itself"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-89"
+      owasp: "LLM05:2025"
+      category: "SQL injection"
+      internal_type: "sql_injection"
+      family: "sql_parameterization"
+      confidence: "0.88"
+      analysis_scope: "taint-intraprocedural"
+      source_description: "text returned by a language model call"
+      sink_description: "SQL query text"
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
+
 
   # ── Insecure deserialization ───────────────────────────────────────────
 
@@ -428,6 +578,31 @@ rules:
         - pattern: $Z.extractAllTo(...)
         - pattern: $Z.extractAllToAsync(...)
         - pattern: $Z.extractEntryTo(...)
+        # The destination built by concatenation instead of `path.join`, and the entry name
+        # read into a local first. juice-shop's `extractZipBuffer` is both at once:
+        # `const fileName = entry.path` and then `createWriteStream('uploads/complaints/' +
+        # fileName)`, which none of the patterns above reach.
+        #
+        # `.path` is not only an archive property, so these branches also require the object
+        # to be named for what it is. Without that, `const p = options.path` followed by a
+        # write under a log directory would be reported as an archive entry. The constraint
+        # is nested in this branch for the reason given on the sendFile rule above.
+        - patterns:
+          - pattern-either:
+            - pattern: fs.createWriteStream($DEST + $ENTRY.path, ...)
+            - pattern: fs.writeFileSync($DEST + $ENTRY.path, ...)
+            - patterns:
+              - pattern-inside: |
+                  $NAME = $ENTRY.path
+                  ...
+              - pattern-either:
+                - pattern: fs.createWriteStream($DEST + $NAME, ...)
+                - pattern: fs.writeFileSync($DEST + $NAME, ...)
+                - pattern: fs.createWriteStream(path.join($DEST, $NAME), ...)
+                - pattern: fs.writeFileSync(path.join($DEST, $NAME), ...)
+          - metavariable-regex:
+              metavariable: $ENTRY
+              regex: "(?i)^\\w*(entry|member|header)\\w*$"
     message: "Archive entry name used as a write path. A `../` entry escapes the destination directory"
     severity: WARNING
     languages: [javascript, typescript]
@@ -438,7 +613,88 @@ rules:
       internal_type: "path_traversal"
       family: "path_containment"
       confidence: "0.78"
-      posting: post
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
+
+  - id: cwe-22.js-path-resolve-request-value
+    patterns:
+      # A single-argument resolve or normalize of a request value has no base at all: the
+      # request chooses the whole path, absolute paths included, so no later comparison
+      # against a base can be what the code meant. The joins against a base are left to the
+      # sink rules above, where a containment check can still follow.
+      - pattern-either:
+        - pattern: path.resolve(req.$SRC.$P)
+        - pattern: path.resolve(req.$SRC[$K])
+        - pattern: path.normalize(req.$SRC.$P)
+        - pattern: path.normalize(req.$SRC[$K])
+      - metavariable-regex:
+          metavariable: $SRC
+          regex: "^(body|query|params)$"
+    message: "Path taken whole from request input, with no base directory. Resolve it against a fixed base and reject anything outside it"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-22"
+      owasp: "A01:2021"
+      category: "path traversal"
+      internal_type: "path_traversal"
+      family: "path_containment"
+      confidence: "0.80"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-10: 1 finding over 23 repositories, adjudicated by label
+        and true (juice-shop routes/dataErasure.ts, the local file read challenge), precision 1.00.
+        Written from that label, so this is in-sample; under the three adjudicated findings the
+        posting policy asks for.
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
+
+  - id: cwe-22.js-render-request-object-locals
+    patterns:
+      # The whole request body or query string handed to the view engine as its locals.
+      # Express merges locals with the render options, so the request can set `layout`
+      # (hbs and express-handlebars read any file as the layout), `settings` and the
+      # engine's own options. Passing named fields is not matched: `{ name: req.body.name }`
+      # cannot carry an option the code did not write.
+      - pattern-either:
+        - pattern: $RES.render($VIEW, req.$SRC, ...)
+        - pattern: $RES.render($VIEW, {..., ...req.$SRC, ...}, ...)
+        - patterns:
+          - pattern-inside: |
+              $LOCALS = req.$SRC
+              ...
+          - pattern: $RES.render($VIEW, $LOCALS, ...)
+      - metavariable-regex:
+          metavariable: $SRC
+          regex: "^(body|query)$"
+    message: "Request object passed whole as view locals. The request can then set `layout` and other view options, which reads files outside the views directory. Pass the named fields the view needs"
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: "CWE-22"
+      owasp: "A01:2021"
+      category: "path traversal"
+      internal_type: "path_traversal"
+      confidence: "0.80"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-10: 3 findings over 23 repositories, 1 adjudicated by
+        label (nodejs-goof routes/index.js, the handlebars layout file read) and 2 hand-read and
+        true (juice-shop routes/dataErasure.ts lines 107 and 123, both branches of the local file
+        read challenge spread `req.body` into the locals), precision 1.00. Written from the goof
+        label, so in-sample.
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
 
   # ── SSRF ───────────────────────────────────────────────────────────────
 
@@ -670,8 +926,14 @@ rules:
       owasp: "A02:2021"
       category: "weak password hashing"
       internal_type: "weak_password_hash"
+      family: "password_hashing"
       confidence: "0.88"
-      posting: post
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
 
   - id: cwe-327.js-ecb-cipher-mode
     patterns:
@@ -1053,11 +1315,17 @@ rules:
       owasp: "A05:2021"
       category: "session management"
       internal_type: "insecure_cookie_flags"
+      family: "cookie_flags"
       confidence: "0.85"
       precision_evidence: >-
         benchmarks/vulnerable-corpus 2026-09: 1 finding, adjudicated by label and true (dvna's
         `secure: false` session cookie), precision 1.00.
-      posting: post
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
 
   - id: cwe-1275.js-cookie-samesite-none
     patterns:
@@ -1097,7 +1365,6 @@ rules:
           - pattern: 'secret: "$VALUE"'
         - patterns:
           - pattern-inside: 'cookieSession({ ... })'
-          - pattern: 'secret: "$VALUE"'
         - pattern: cookieParser("$VALUE")
       - metavariable-regex:
           metavariable: $VALUE

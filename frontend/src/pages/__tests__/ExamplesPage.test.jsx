@@ -58,7 +58,7 @@ describe('ExamplesPage', () => {
   it('claims nothing that is not shipped', () => {
     renderPage()
 
-    expect(screen.getByRole('heading', { name: 'In every review' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'What a review can contain' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Inline findings' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Severity and confidence' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Verified fixes' })).toBeInTheDocument()
@@ -67,6 +67,8 @@ describe('ExamplesPage', () => {
     expect(screen.queryByText('Coming soon')).toBeNull()
     expect(screen.queryByText('In progress')).toBeNull()
     expect(screen.getAllByText('Live now').length).toBe(4)
+    expect(screen.queryByText(/each fix proven by a generated regression test/i)).toBeNull()
+    expect(screen.getByText(/may omit a suggestion/i)).toBeInTheDocument()
   })
 
   it('closes with the shared call to action', () => {

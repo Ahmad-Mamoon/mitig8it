@@ -3,6 +3,7 @@
 #   make deps    create the virtualenvs and install the node modules, the way CI does
 #   make test    every suite, stopping at the first failure
 #   make bench   every benchmark, ending in one summary table
+#   make recall-ratchet   the vulnerable corpus against its recall baseline (downloads 23 trees)
 #
 # Prerequisites and what each target installs: CONTRIBUTING.md.
 
@@ -15,6 +16,8 @@ VENV_REMEDIATION := $(CURDIR)/.venv/remediation
 PY_ANALYSIS := $(VENV_ANALYSIS)/bin/python
 PY_REMEDIATION := $(VENV_REMEDIATION)/bin/python
 RESULTS := $(CURDIR)/benchmarks/results
+RECALL_RESULTS := $(CURDIR)/scripts/replay/.cache/recall-results
+DEV_EVAL_ARGS ?=
 
 # The two Python environments are separate because they cannot be one. The analysis service pins
 # semgrep 1.173.0, which requires opentelemetry-api~=1.37.0, and the remediation service pins
@@ -22,12 +25,17 @@ RESULTS := $(CURDIR)/benchmarks/results
 
 .PHONY: help deps test bench clean \
         test-analysis test-remediation test-api test-github test-frontend test-action test-harness \
-        bench-tier1 bench-tier2 bench-remediation-reference bench-remediation-engine-local bench-summary
+        test-quality \
+        bench-tier1 bench-tier2 bench-remediation-reference bench-remediation-engine-local bench-summary \
+        recall-measure recall-ratchet recall-baseline dev-eval
 
 help:
 	@echo "make deps    create .venv/analysis and .venv/remediation and install node modules"
 	@echo "make test    analysis, remediation, api, github, frontend, action, benchmark harness"
 	@echo "make bench   tier 1 and tier 2 precision, remediation corpus under both adapters"
+	@echo "make recall-ratchet   fail if a labelled vulnerability that was detected no longer is"
+	@echo "make recall-baseline  re-measure the corpus and rewrite the recall baseline"
+	@echo "make dev-eval   local repair evaluation; optional DEV_EVAL_ARGS='--baseline path.json'"
 	@echo "make clean   remove the virtualenvs, the node modules and the benchmark reports"
 
 # --- dependencies ------------------------------------------------------------------------------
@@ -48,7 +56,7 @@ deps:
 # --- tests -------------------------------------------------------------------------------------
 # Each suite is its own target and they are listed in order, so make stops at the first failure.
 
-test: test-analysis test-remediation test-api test-github test-frontend test-action test-harness
+test: test-analysis test-remediation test-api test-github test-frontend test-action test-harness test-quality
 	@echo "all suites passed"
 
 test-analysis:
@@ -79,9 +87,26 @@ test-harness:
 	@echo "== benchmark harness =="
 	$(PY_REMEDIATION) -m pytest benchmarks/remediation/tests -q
 
+test-quality:
+	@echo "== offline quality gates =="
+	$(PY_ANALYSIS) -m pytest benchmarks/test_detection_evaluation.py benchmarks/test_eval.py \
+	  benchmarks/test_quality_gate.py \
+	  benchmarks/test_production_readiness.py -q
+
 # --- benchmarks --------------------------------------------------------------------------------
 
-bench: bench-tier1 bench-tier2 bench-remediation-reference bench-remediation-engine-local bench-summary
+bench: bench-rule-quality bench-tier1 bench-tier2 bench-remediation-reference bench-remediation-engine-local bench-summary
+
+.PHONY: bench-rule-quality
+bench-rule-quality: | $(RESULTS)
+	$(PY_ANALYSIS) -m benchmarks.rule_quality_gate --output $(RESULTS)/rule-quality.json
+
+.PHONY: production-readiness quality-report
+production-readiness: | $(RESULTS)
+	$(PY_ANALYSIS) -m benchmarks.production_readiness --output $(RESULTS)/production-readiness.json
+
+quality-report: | $(RESULTS)
+	$(PY_ANALYSIS) -m benchmarks.production_readiness --report-only --output $(RESULTS)/production-readiness.json
 
 $(RESULTS):
 	mkdir -p $(RESULTS)
@@ -111,9 +136,31 @@ bench-remediation-engine-local: | $(RESULTS)
 bench-summary:
 	@$(PY_REMEDIATION) scripts/bench-summary.py
 
+# --- recall ratchet ----------------------------------------------------------------------------
+# Not part of make test or make bench: it downloads the 23 pinned trees of the vulnerable corpus
+# into scripts/replay/.cache/snapshots on first use and scans all of them, which takes minutes.
+# The scanner is found on PATH, so the analysis virtualenv's bin directory is put there.
+
+recall-measure:
+	@echo "== vulnerable corpus, snapshot run =="
+	PATH="$(VENV_ANALYSIS)/bin:$$PATH" $(PY_ANALYSIS) scripts/replay/ratchet.py measure --results $(RECALL_RESULTS)
+
+recall-ratchet: recall-measure
+	@echo "== recall ratchet =="
+	$(PY_ANALYSIS) scripts/replay/ratchet.py check $(RECALL_RESULTS)
+
+recall-baseline: recall-measure
+	@echo "== recall baseline =="
+	$(PY_ANALYSIS) scripts/replay/ratchet.py update $(RECALL_RESULTS)
+
+# Explicit developer entry point; not included in deployments or production dependencies.
+dev-eval: | $(RESULTS)
+	$(PY_REMEDIATION) -m benchmarks.remediation.dev_eval $(DEV_EVAL_ARGS)
+
 # --- housekeeping ------------------------------------------------------------------------------
 
 clean:
 	rm -rf $(CURDIR)/.venv
 	rm -rf frontend/node_modules services/api-service/node_modules services/github-service/node_modules
 	rm -f $(RESULTS)/*.json $(RESULTS)/*.txt
+	rm -rf $(RECALL_RESULTS)

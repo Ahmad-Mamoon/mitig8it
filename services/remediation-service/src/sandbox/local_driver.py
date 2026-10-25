@@ -29,6 +29,7 @@ from .dependencies import (
     python_path_value,
 )
 from .execution import aggregate_outcome, build_evidence, output_tail, parse_scanner_findings
+from .drivers import LOCAL_DRIVER, validate_driver_kind
 from .runner import materialize_tree
 
 logger = logging.getLogger("mitig8it.remediation.sandbox.local")
@@ -173,6 +174,7 @@ class LocalSubprocessDriver:
     verification_level = VERIFICATION_LEVEL
 
     def __init__(self, workspace_root: str | None = None):
+        validate_driver_kind(LOCAL_DRIVER)
         self.workspace_root = workspace_root or os.getenv("SANDBOX_LOCAL_WORKSPACE_ROOT") or None
         if self.workspace_root:
             # A configured root is a deployment's choice of scratch directory, not a promise
@@ -364,6 +366,11 @@ class InProcessSandboxBroker:
 
     def __init__(self, driver: Any | None = None):
         self.driver = driver or LocalSubprocessDriver()
+
+    @property
+    def verification_level(self) -> str:
+        """Known before execution, so policy can refuse this driver without invoking it."""
+        return self.driver.verification_level
 
     async def verify(self, payload: dict[str, Any], deadline_seconds: int) -> dict[str, Any]:
         import asyncio

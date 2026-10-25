@@ -32,18 +32,28 @@ COVERAGE_FILES = (
 # the CWEs each one is derived from there by `rule_family()`. A rule that declares a family
 # its CWE does not produce would be handed to the engine as something else.
 #
-# `workflow_hardening` carries two, because the two shapes it can patch are two different
+# `workflow_hardening` carries four, because the four shapes it can patch are four different
 # defects: CWE-78 for an interpolation inside a `run:` block, CWE-1357 for an action reference
-# that is not a digest. `rule_family()` resolves it from the finding's internal type before it
-# reaches the CWE table, precisely so that a CWE-78 workflow finding is not mistaken for the
-# `command_arguments` family.
+# that is not a digest, CWE-829 for a checkout of the pull request's revision under a
+# privileged trigger, and CWE-732 for a write grant under `pull_request_target`. `rule_family()`
+# resolves it from the finding's internal type and rule id before it reaches the CWE table,
+# precisely so that a CWE-78 workflow finding is not mistaken for the `command_arguments`
+# family.
 FAMILY_CWE = {
     "sql_parameterization": frozenset({"CWE-89"}),
     "command_arguments": frozenset({"CWE-78"}),
     "path_containment": frozenset({"CWE-22"}),
     "hardcoded_credential": frozenset({"CWE-798"}),
     "code_injection_eval": frozenset({"CWE-95"}),
-    "workflow_hardening": frozenset({"CWE-78", "CWE-1357"}),
+    "workflow_hardening": frozenset({"CWE-78", "CWE-1357", "CWE-829", "CWE-732"}),
+    # A weak password hash is declared as CWE-916 by the rules written for it, and as CWE-327 or
+    # CWE-328 by a weak-digest rule whose finding the analysis service renames
+    # `weak_password_hash` because the digested value is a credential. `rule_family()` reads the
+    # CWE-916 rules directly and the other two only through that internal type.
+    "password_hashing": frozenset({"CWE-916", "CWE-327", "CWE-328"}),
+    # A cookie without Secure is CWE-614 and one without HttpOnly is CWE-1004; the rules declare
+    # whichever one their pattern is mostly about, and both reach the same repair.
+    "cookie_flags": frozenset({"CWE-614", "CWE-1004"}),
 }
 
 
@@ -113,8 +123,9 @@ class TestRuleShape:
         )
         if posting == POSTING_QUARANTINE:
             assert str(metadata.get("posting_evidence", "")).strip(), (
-                f"{rule['id']} is quarantined with no evidence; a rule is withheld on a "
-                "measurement, and the measurement is what lets someone re-enable it"
+                f"{rule['id']} is quarantined without a reason; record the measured "
+                "failure or missing qualifying holdout evidence, never imply that "
+                "unvalidated means validated or that a fixture pass permits re-enabling"
             )
 
     @pytest.mark.parametrize("rule", [rule for _, rule in COVERAGE_RULES], ids=IDS)
@@ -140,10 +151,18 @@ class TestPolicyLoading:
     def test_quarantined_set_is_what_the_files_declare(self):
         declared = {
             f"opengrep.{rule['id']}"
-            for _, rule in COVERAGE_RULES
+            for path in sorted(RULES_DIR.glob("*.yml"))
+            for rule in yaml.safe_load(path.read_text(encoding="utf-8"))["rules"]
             if (rule.get("metadata") or {}).get("posting") == POSTING_QUARANTINE
         }
         assert quarantined_rule_ids() == declared
+
+    def test_quarantined_rules_including_base_files_explain_why_they_are_withheld(self):
+        for path in sorted(RULES_DIR.glob("*.yml")):
+            for rule in yaml.safe_load(path.read_text(encoding="utf-8"))["rules"]:
+                metadata = rule.get("metadata") or {}
+                if metadata.get("posting") == POSTING_QUARANTINE:
+                    assert str(metadata.get("posting_evidence", "")).strip(), rule["id"]
 
     def test_every_rule_file_is_loaded_into_the_metadata_index(self):
         index = load_rule_metadata()

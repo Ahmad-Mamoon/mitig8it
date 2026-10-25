@@ -12,7 +12,7 @@ An item moves off this page only with a merged pull request or a recorded live c
 | --- | --- |
 | Tolerant scanning | A parse warning or a per-file timeout becomes a limitation rather than a failure. Landed; not yet certified that only configuration errors fail closed. |
 | File caps degrade, not fail | A pull request over the 200-file cap is reviewed to the cap with a limitation line. Landed; not yet certified. |
-| One finding per vulnerable line | Cross-tier clustering to one suggestion per line. Landed; not yet confirmed complete. |
+| One finding per vulnerable line | Cross-tier clustering to one suggestion per line. Confirmed 2026-09-28: the clustering was right and nothing was giving it both tiers, because the control plane calls the two tier endpoints separately. Folded at the one point that sees both, and pinned by `tests/test_cross_tier_duplicates.py`. |
 | Real-repository validation | Precision is there, recall is not: 0.58 of labelled lines, and lower again for what actually posts. The gap by class is in [docs/validation/vulnerable-corpus-2026-09.md](docs/validation/vulnerable-corpus-2026-09.md). |
 | Tier 1 posting policy | Five rules producing almost all false positives are quarantined. The measured-precision gate that decides posting generally is not finished. |
 | Tier 2 coverage | 25 rules to 130, all written in-house. Full OWASP-class coverage across JavaScript, TypeScript, Python and templates is not reached. |
@@ -47,9 +47,9 @@ An item moves off this page only with a merged pull request or a recorded live c
 | Item | What is left |
 | --- | --- |
 | Public dogfood | The Action reviews this repository's own pull requests. The App does not yet review every pull request on `aicodesentry/mitig8it`. |
-| GitHub Action | Shipped as `aicodesentry/mitig8it/action@main`. A short, stable `uses:` name is not. The defects the ten-repository trial found are open: [docs/validation/action-trial-2026-09.md](docs/validation/action-trial-2026-09.md). |
+| GitHub Action | The release machinery exists and is unexercised: [.github/workflows/release.yml](.github/workflows/release.yml) builds and pushes the image, attests it, and moves `v1`, and the documented install is `@v1`. Nobody has pushed a `v*.*.*` tag yet, so no release, no published image and no measured cold start exist. Owner steps: [docs/releasing.md](docs/releasing.md). The defects the ten-repository trial found are open: [docs/validation/action-trial-2026-09.md](docs/validation/action-trial-2026-09.md). |
 | Public sandbox | Not started. There is nowhere a stranger can open a pull request and watch a review land without installing anything. |
-| Marketplace listing | Not started. Owner action. |
+| Marketplace listing | Blocked on a decision, not on work. The Marketplace lists only an `action.yml` at the repository root, and this one is at `action/action.yml`. What moving it would cost is written down in [docs/releasing.md](docs/releasing.md#the-marketplace-answer); the owner decides. |
 | Free for public repositories | Not started. Not stated on the site and not enforced in billing. |
 
 ## Order of work

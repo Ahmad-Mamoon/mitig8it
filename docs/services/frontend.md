@@ -82,7 +82,6 @@ Main API groups:
 - `suppressionAPI`
 - `reportsAPI`
 - `analysisAPI`
-- `webhookAPI`
 
 The Axios client:
 

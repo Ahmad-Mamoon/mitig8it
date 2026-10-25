@@ -8,6 +8,35 @@ merged pull request or a recorded live check.
 
 States: done, in progress, open.
 
+The machine-enforced quality decision is `python -m benchmarks.production_readiness`
+or `make production-readiness`. It emits JSON and exits 2 when production quality
+evidence is missing. Current result: **not ready** — 201 posting rules are legacy
+exceptions, no posting rule has qualifying holdout evidence, and remediation has
+no configured independent review signature verifier. Passing unit tests or
+`make bench-rule-quality` does not change that decision. `make quality-report`
+only writes the report and must not be used as a shipping gate.
+
+The [exact quality criterion and path audit](../benchmarks/rule-quality/README.md)
+covers rule admission, runtime filtering, fix publication, image release, and all
+Cloud Run/Firebase production workflows. This check covers analysis and remediation
+quality; the operational, trust, and distribution items below remain separate work.
+
+## Live rollout blockers (read-only inspection, 2026-10-20)
+
+- The GCP project has the legacy `codesentry-database-url`, but not
+  `codesentry-database-runtime-url` or `codesentry-internal-secret`; the current API
+  revision still mounts the legacy database credential and a plain internal value.
+- The repository has no protected `production` or `staging` GitHub Environment matching
+  the workflows. Create them, scope their variables, and require production approval.
+- The Cloud Run Job sandbox Terraform and its IAM/private-egress controls have not been
+  applied and proven by the new signed live-release smoke.
+- Strict AI readiness exits 2: 201 rules are frozen legacy, 14 are quarantined, zero
+  have qualifying holdout evidence, and remediation lacks an approved cryptographic
+  external-review verifier and independently reviewed release corpus.
+
+Until those owner actions and evidence checks pass, use the staging compatibility path.
+Do not weaken the production gate to make a deployment green.
+
 ## 1. Correctness on unfamiliar input
 
 | Item | Bar | State | Evidence |
@@ -17,7 +46,7 @@ States: done, in progress, open.
 | One finding per vulnerable line | Findings from both analysis tiers cluster; one suggestion per line. | in progress | PR 429. |
 | Unsupported families are skipped, not fatal | A finding outside the supported families never blocks fixes for the others. | done | Residual report lists skipped findings. |
 | Real-repository validation | Analysis and remediation replayed over recent pull requests of at least ten public repositories (JavaScript and Python, monorepos, vendored and generated code, non-UTF-8 content) with every crash, timeout, and limitation triaged. | in progress | PR 440: 165 merged pull requests from 11 repositories, four robustness bugs fixed; 29 of 30 sampled tier 1 findings were false positives. PR 447: 171 labelled vulnerabilities in 23 repositories; precision of posted findings 0.97 with PR 441, recall 0.40. PR 449: recall 0.58, XSS 26 of 32. |
-| Tier 1 posting policy | A rule posts only with measured precision; five rules with near-total false positives are quarantined with evidence, a static check catches the regex shape, comments are stripped before matching, and a labelled benchmark gates every rule change. | in progress | PR 441, confirmed independently by PR 447 (the same five rules produce 50 of 57 false positives). |
+| Rule publication policy | New, changed, and re-enabled rules require at least 100 reviewed holdout predictions, no unresolved judgments, and a 95% Wilson lower precision bound of at least 0.95. | in progress | Gate and runtime admission implemented; 201 frozen legacy exceptions remain unvalidated and 14 rules are quarantined. Production readiness stays false until posting rules have qualifying evidence. |
 | Tier 2 coverage | Rules for the OWASP classes across JavaScript, TypeScript, Python, and template languages, written in-house after the public rule libraries were found to forbid use in a paid service. | in progress | PR 445: 25 to 116 rules; PR 449: template files and XSS. |
 | Evaluation corpus | At least 40 authored fixtures across the five families, both languages, with negatives and adversarial cases, run on every change. | in progress | PR 446: 42 fixtures; PR 448: 44, all passing under both adapters with an empty known-failures list. |
 
@@ -44,7 +73,7 @@ States: done, in progress, open.
 | Staging environment | Same workflows deploy a staging set of services from a branch before main. | in progress | PR 444: environment input on every deploy workflow and a staging branch workflow; owner one-time steps in docs/deployment/staging.md. |
 | Database backup and restore drill | Restore to a point in time exercised once and documented. | open | |
 | Runbooks exercised | Each runbook under docs/runbooks run end to end once by someone other than the author. | open | |
-| Row-level security enforced | Runtime database role without BYPASSRLS. | open | Recorded in known debt. |
+| Row-level security enforced | Runtime database role without BYPASSRLS. | operator rollout pending | Production startup/deploy verification, separate runtime credential, and real-login integration tests cover all 12 forced-RLS tables. [Runtime-role runbook](runbooks/runtime-database-role.md); live cutover remains unverified. |
 
 ## 4. Distribution
 

@@ -20,6 +20,9 @@
       "<rootDir>/node_modules"
     ]
   },
+  "engines": {
+    "node": ">=22"
+  },
   "dependencies": {
     "@grpc/grpc-js": "^1.14.4",
     "@opentelemetry/api": "1.9.1",
@@ -31,7 +34,6 @@
     "express": "^5.1.0",
     "google-protobuf": "^4.0.2",
     "helmet": "^8.2.0",
-    "nodemailer": "^9.0.1",
     "pg": "^8.21.0",
     "prom-client": "^15.1.3"
   },

@@ -6,14 +6,15 @@ The workflows are in place. The cloud resources are not: nothing in this reposit
 creates a project, a database, a GitHub App or a Firebase site, and this page is the
 list of what the owner has to create by hand, once.
 
-Until every step below is done, a push to `staging` fails at the first missing secret.
+Until every step below is done, a successful `CI` run for a push to `staging` starts the
+deployment and fails at the first missing secret.
 That is deliberate. A staging deploy that silently fell back to a production secret
 would point staging at production data, and the first thing anyone does in staging is
 break something.
 
 ## How it works once it is set up
 
-Push to the `staging` branch. `.github/workflows/deploy-staging.yml` calls the same
+Push to the `staging` branch. After CI succeeds, `.github/workflows/deploy-staging.yml` calls the same
 four Cloud Run workflows and the frontend workflow with `environment: staging`, which:
 
 - appends `-staging` to every Cloud Run service name, so `codesentry-api` becomes
@@ -30,9 +31,10 @@ four Cloud Run workflows and the frontend workflow with `environment: staging`, 
 The same environment input is available on each workflow's manual run, so a single
 service can be pushed to staging without the branch.
 
-Order is enforced: the github and analysis services deploy first because the API's
-deploy writes their URLs into its own environment, and the frontend deploys last so it
-is never pointing at an API that has not been updated.
+Order is enforced: the API/client revision deploys first; GitHub, analysis, and
+remediation deploy second; an authenticated application-RPC smoke must prove both gRPC
+boundaries; and the frontend deploys last. Every component checks out the exact commit
+that passed CI.
 
 ## One-time owner steps
 
@@ -49,6 +51,11 @@ printf '%s' 'postgresql://...staging connection string...' | \
   gcloud secrets create codesentry-database-url-staging --data-file=- \
     --replication-policy=automatic --project codesentry-260311-9f2b
 ```
+
+That credential is the migration owner. Follow the
+[runtime database role runbook](../runbooks/runtime-database-role.md) to provision a
+non-owning, non-bypass-RLS login and store its URL as
+`codesentry-database-runtime-url-staging` before deploying the API.
 
 Never point staging at the production connection string. Staging writes review
 comments, check runs and remediation branches; pointed at production data it would
@@ -97,6 +104,7 @@ valid in production.
 ```sh
 P=codesentry-260311-9f2b
 for name in codesentry-jwt-secret-staging codesentry-encryption-key-staging \
+            codesentry-internal-secret-staging \
             codesentry-remediation-internal-secret-staging; do
   openssl rand -base64 32 | tr -d '\n' | \
     gcloud secrets create "$name" --data-file=- --replication-policy=automatic --project "$P"
@@ -118,14 +126,16 @@ The full list the workflows reference:
 
 | Secret | Used by |
 | --- | --- |
-| `codesentry-database-url-staging` | API, github service, API migrations |
+| `codesentry-database-url-staging` | API migrations and runtime-role provisioning only |
+| `codesentry-database-runtime-url-staging` | API runtime only |
 | `codesentry-jwt-secret-staging` | API |
 | `codesentry-encryption-key-staging` | API |
 | `codesentry-github-app-staging-id` | API, github service |
 | `codesentry-github-app-staging-private-key` | API, github service |
 | `codesentry-github-client-staging-id` | API |
 | `codesentry-github-client-staging-secret` | API |
-| `codesentry-webhook-secret-staging` | API |
+| `codesentry-webhook-secret-staging` | API and GitHub service |
+| `codesentry-internal-secret-staging` | API, GitHub and analysis services; deployed dependency smoke |
 | `codesentry-remediation-internal-secret-staging` | API, remediation service |
 | `codesentry-gemini-api-key-staging` | analysis service |
 | `codesentry-repair-llm-base-url-staging` | remediation service |
@@ -158,9 +168,10 @@ are deployed once.
 | `CODESENTRY_ANALYSIS_URL_STAGING` | the `codesentry-analysis-staging` Cloud Run URL |
 | `FIREBASE_HOSTING_SITE_STAGING` | `codesentry-staging` |
 
-To break the cycle, run **Deploy GitHub Service** and **Deploy Analysis** manually with
-`environment: staging` first, read their URLs out of the workflow logs, set the
-variables, then push to `staging`.
+To break the URL cycle on the first installation, run **Deploy GitHub Service** and
+**Deploy Analysis** manually with `environment: staging`, read their URLs from the
+workflow logs, set the variables, and then push to `staging`. This bootstrap exception
+does not replace the ordered workflow for normal releases.
 
 ### 6. IAM
 

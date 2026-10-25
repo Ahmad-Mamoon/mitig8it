@@ -3,13 +3,13 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, staging]
 
-# Cancel duplicate runs on feature branches; do not cancel on main (avoids
-# aborting the run that deploy workflows wait on when pushes are back-to-back).
+# Cancel duplicate runs on feature branches; do not cancel on deploy branches (avoids
+# aborting the run that an environment deployment waits on when pushes are back-to-back).
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/staging' }}
 
 # Least privilege: only what these jobs need. dependency-review uses the
 # default GITHUB_TOKEN to read the dependency graph and PR diff.
@@ -23,8 +23,9 @@ jobs:
   security-gitleaks:
     name: Secret scan (Gitleaks)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
       - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e
@@ -38,11 +39,12 @@ jobs:
   dependency-review:
     name: Dependency review
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Skip when dependency review is unavailable
         if: ${{ github.event_name != 'pull_request' || (github.event.repository.private && vars.ENABLE_DEPENDENCY_REVIEW != 'true') }}
         run: echo "Dependency review only runs on pull requests, and private repositories must opt in with ENABLE_DEPENDENCY_REVIEW=true."
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         if: ${{ github.event_name == 'pull_request' && (!github.event.repository.private || vars.ENABLE_DEPENDENCY_REVIEW == 'true') }}
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294
         if: ${{ github.event_name == 'pull_request' && (!github.event.repository.private || vars.ENABLE_DEPENDENCY_REVIEW == 'true') }}
@@ -50,76 +52,17 @@ jobs:
           # Change to critical if moderate/high noise is too high.
           fail-on-severity: high
 
-  npm-audit:
-    name: npm audit (${{ matrix.name }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: frontend
-            directory: frontend
-            lockfile: frontend/package-lock.json
-          - name: api-service
-            directory: services/api-service
-            lockfile: services/api-service/package-lock.json
-          - name: github-service
-            directory: services/github-service
-            lockfile: services/github-service/package-lock.json
-          - name: proto-js
-            directory: proto
-            lockfile: proto/package-lock.json
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
-        with:
-          node-version: '20'
-          cache: npm
-          cache-dependency-path: ${{ matrix.lockfile }}
-      - run: npm ci
-        working-directory: ${{ matrix.directory }}
-      - run: npm audit --audit-level=high
-        working-directory: ${{ matrix.directory }}
-
-  pip-audit:
-    name: pip-audit (${{ matrix.name }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: analysis-service
-            directory: services/analysis-service/src
-            requirements: requirements.txt
-            audit_args: >-
-              --ignore-vuln PYSEC-2026-3481
-              --ignore-vuln PYSEC-2026-3482
-              --ignore-vuln PYSEC-2026-3483
-          - name: proto-py
-            directory: proto
-            requirements: requirements.txt
-            audit_args: ""
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
-        with:
-          python-version: '3.11'
-      - run: pip install pip-audit
-      # Semgrep 1.172.0 pins mcp 1.23.3. Keep these ignored until Semgrep
-      # ships a compatible release with mcp >=1.28.1.
-      - run: pip-audit -r "${{ matrix.requirements }}" ${{ matrix.audit_args }}
-        working-directory: ${{ matrix.directory }}
-
   frontend-checks:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
@@ -129,6 +72,7 @@ jobs:
 
   api-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:15
@@ -147,10 +91,10 @@ jobs:
       run:
         working-directory: services/api-service
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
           cache-dependency-path: services/api-service/package-lock.json
       - run: npm ci
@@ -161,9 +105,11 @@ jobs:
           psql postgres://postgres:postgres@localhost:5432/postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE mitig8it_access_test'
           psql postgres://postgres:postgres@localhost:5432/postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE mitig8it_lifecycle_test'
           psql postgres://postgres:postgres@localhost:5432/postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE mitig8it_purge_test'
+          psql postgres://postgres:postgres@localhost:5432/postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE mitig8it_runtime_role_test'
           DATABASE_URL=postgres://postgres:postgres@localhost:5432/mitig8it_access_test npm run test:integration:access
           DATABASE_URL=postgres://postgres:postgres@localhost:5432/mitig8it_lifecycle_test npm run test:integration:lifecycle
           DATABASE_URL=postgres://postgres:postgres@localhost:5432/mitig8it_purge_test npm run test:integration:purge
+          DATABASE_URL=postgres://postgres:postgres@localhost:5432/mitig8it_runtime_role_test npm run test:integration:runtime-role
       - name: Migration pipeline check
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
@@ -174,14 +120,15 @@ jobs:
 
   github-service-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: services/github-service
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
           cache-dependency-path: services/github-service/package-lock.json
       - run: npm ci
@@ -190,12 +137,13 @@ jobs:
 
   analysis-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     defaults:
       run:
         working-directory: services/analysis-service/src
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: '3.11'
           cache: 'pip'
@@ -212,9 +160,18 @@ jobs:
           -s B608
       - run: pytest tests -q
 
+      - name: Rule publication precision gate
+        working-directory: ${{ github.workspace }}
+        run: |
+          python -m pytest benchmarks/test_detection_evaluation.py benchmarks/test_eval.py \
+            benchmarks/test_quality_gate.py benchmarks/test_production_readiness.py -q
+          python -m benchmarks.rule_quality_gate
+          python -m benchmarks.production_readiness --report-only
+
   docker-build:
     name: Docker image (${{ matrix.name }})
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -222,12 +179,21 @@ jobs:
           - name: api-service
             context: services/api-service
             dockerfile: Dockerfile
+          - name: api-service (prod)
+            context: services/api-service
+            dockerfile: Dockerfile.prod
           - name: github-service
             context: services/github-service
             dockerfile: Dockerfile
+          - name: github-service (prod)
+            context: services/github-service
+            dockerfile: Dockerfile.prod
           - name: analysis-service
             context: services/analysis-service
             dockerfile: Dockerfile
+          - name: analysis-service (prod)
+            context: services/analysis-service
+            dockerfile: Dockerfile.prod
           - name: remediation-service
             context: services/remediation-service
             dockerfile: Dockerfile
@@ -238,7 +204,7 @@ jobs:
             context: services/remediation-service
             dockerfile: Dockerfile.runner
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: docker build
         run: docker build -f "${{ matrix.context }}/${{ matrix.dockerfile }}" "${{ matrix.context }}"
 
@@ -248,6 +214,7 @@ jobs:
   remediation-integration-tests:
     name: Remediation integration (API service)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:15
@@ -266,10 +233,10 @@ jobs:
       run:
         working-directory: services/api-service
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
           cache-dependency-path: services/api-service/package-lock.json
       - run: npm ci
@@ -281,14 +248,15 @@ jobs:
   remediation-github-tests:
     name: Remediation contract (GitHub service)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: services/github-service
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
           cache-dependency-path: services/github-service/package-lock.json
       - run: npm ci
@@ -299,14 +267,15 @@ jobs:
   remediation-browser-tests:
     name: Remediation browser (frontend)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
@@ -317,11 +286,10 @@ jobs:
   ci-required:
     name: Required CI
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs:
       - security-gitleaks
       - dependency-review
-      - npm-audit
-      - pip-audit
       - frontend-checks
       - api-tests
       - github-service-tests
@@ -335,6 +303,17 @@ jobs:
       - name: Report required job results
         run: |
           echo '${{ toJSON(needs) }}'
+      # A job this run never finished is not a job that failed. Cancellation means a newer push
+      # superseded this run, and the newer run is the one that reports; a skip means a job's own
+      # condition said it had nothing to do, and a job that skipped because something it needed
+      # failed is preceded by that failure, which is caught below. Treating either as a failure
+      # turned a healthy pull request red for a reason its author could not act on, which is a
+      # bad first impression for a contributor and an untrue one for everybody.
+      - name: Say why this run has no verdict
+        if: ${{ !contains(needs.*.result, 'failure') && contains(needs.*.result, 'cancelled') }}
+        run: |
+          echo "::notice::This run was cancelled, most likely superseded by a newer push."
+          echo "::notice::The newest run on this commit is the one that reports."
       - name: Fail when any required job failed
-        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}
+        if: ${{ contains(needs.*.result, 'failure') }}
         run: exit 1

@@ -18,6 +18,23 @@ rules:
         - pattern: $CURSOR.execute(f"...{$INPUT}...")
         - pattern: $CURSOR.execute(f"...{$INPUT}...", ...)
         - pattern: $CURSOR.executemany(f"...{$INPUT}...", ...)
+      # An identifier cannot be a bound parameter, so a dynamic ORDER BY column is written
+      # as an interpolation and made safe by checking it against an allowlist first. That is
+      # the correct way to write it. Reporting it tells a reader their fix is a defect, so a
+      # membership test on the interpolated name, in the function that interpolates it,
+      # withdraws the finding. The unguarded form is still reported.
+      - pattern-not-inside: |
+          def $F(...):
+            ...
+            if $INPUT not in $ALLOWED:
+              ...
+            ...
+      - pattern-not-inside: |
+          def $F(...):
+            ...
+            if $INPUT in $ALLOWED:
+              ...
+            ...
     message: "SQL passed to execute() as an f-string. Pass the value as a bound parameter"
     severity: ERROR
     languages: [python]
@@ -33,11 +50,10 @@ rules:
   - id: cwe-89.py-execute-concat-direct
     patterns:
       - pattern-either:
-        - pattern: $CURSOR.execute("..." + $INPUT)
-        - pattern: $CURSOR.execute("..." + $INPUT, ...)
+        - pattern: $CURSOR.execute(<... "..." + $INPUT ...>)
+        - pattern: $CURSOR.execute(<... "..." + $INPUT ...>, ...)
         - pattern: $CURSOR.execute("..." % $INPUT)
         - pattern: $CURSOR.execute("...".format(...))
-        - pattern: $CURSOR.execute("..." + $INPUT + "...")
     message: "SQL passed to execute() as a built string. Pass the value as a bound parameter"
     severity: ERROR
     languages: [python]
@@ -59,7 +75,7 @@ rules:
       - pattern-either:
         - pattern: text(f"...{$INPUT}...")
         - pattern: sqlalchemy.text(f"...{$INPUT}...")
-        - pattern: text("..." + $INPUT)
+        - pattern: text(<... "..." + $INPUT ...>)
         - pattern: text("...".format(...))
     message: "SQLAlchemy text() built by interpolation. Use a :name bind parameter"
     severity: ERROR
@@ -77,10 +93,10 @@ rules:
     patterns:
       - pattern-either:
         - pattern: $M.objects.raw(f"...{$INPUT}...")
-        - pattern: $M.objects.raw("..." + $INPUT)
+        - pattern: $M.objects.raw(<... "..." + $INPUT ...>)
         - pattern: $M.objects.raw("...".format(...))
         - pattern: $M.objects.extra(where=[f"...{$INPUT}..."])
-        - pattern: $M.objects.extra(where=["..." + $INPUT])
+        - pattern: $M.objects.extra(where=[<... "..." + $INPUT ...>])
     message: "Django raw SQL built by interpolation. Pass params to raw() instead"
     severity: ERROR
     languages: [python]
@@ -136,7 +152,7 @@ rules:
     patterns:
       - pattern-either:
         - pattern: os.system(f"...{$INPUT}...")
-        - pattern: os.system("..." + $INPUT)
+        - pattern: os.system(<... "..." + $INPUT ...>)
         - pattern: os.system("...".format(...))
         - pattern: os.system("..." % $INPUT)
     message: "Shell command assembled by interpolation. Use subprocess.run with an argument list"
@@ -158,8 +174,8 @@ rules:
         - pattern: subprocess.call(f"...{$INPUT}...", ..., shell=True, ...)
         - pattern: subprocess.Popen(f"...{$INPUT}...", ..., shell=True, ...)
         - pattern: subprocess.check_output(f"...{$INPUT}...", ..., shell=True, ...)
-        - pattern: subprocess.run("..." + $INPUT, ..., shell=True, ...)
-        - pattern: subprocess.check_output("..." + $INPUT, ..., shell=True, ...)
+        - pattern: subprocess.run(<... "..." + $INPUT ...>, ..., shell=True, ...)
+        - pattern: subprocess.check_output(<... "..." + $INPUT ...>, ..., shell=True, ...)
     message: "subprocess with shell=True on a built command string. Pass an argument list and drop shell"
     severity: ERROR
     languages: [python]
@@ -179,7 +195,7 @@ rules:
     patterns:
       - pattern-either:
         - pattern: os.popen(f"...{$INPUT}...")
-        - pattern: os.popen("..." + $INPUT)
+        - pattern: os.popen(<... "..." + $INPUT ...>)
         - pattern: os.popen(f"...{$INPUT}...", ...)
         - pattern: commands.getoutput(f"...{$INPUT}...")
         - pattern: commands.getstatusoutput(f"...{$INPUT}...")
@@ -223,9 +239,9 @@ rules:
     patterns:
       - pattern-either:
         - pattern: eval(f"...{$INPUT}...")
-        - pattern: eval("..." + $INPUT)
+        - pattern: eval(<... "..." + $INPUT ...>)
         - pattern: exec(f"...{$INPUT}...")
-        - pattern: exec("..." + $INPUT)
+        - pattern: exec(<... "..." + $INPUT ...>)
         - pattern: exec("...".format(...))
     message: "Python source assembled by interpolation and executed"
     severity: ERROR
@@ -239,6 +255,114 @@ rules:
       confidence: "0.88"
       posting: post
 
+  # ── Language model output reaching a sink ──────────────────────────────
+  # OWASP LLM05, improper output handling. The source is the return value of a model client
+  # call in the same function, so a prompt the attacker can influence decides what reaches the
+  # sink. Measured on 12 open-source LLM applications (38,098 files): zero findings, see
+  # docs/validation/llm-output-sinks-2026-10.md.
+
+  - id: cwe-95.py-llm-output-code-execution
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+        - pattern: $C.chat.completions.create(...)
+        - pattern: $C.responses.create(...)
+        - pattern: $C.messages.create(...)
+        - pattern: $C.generate_content(...)
+        - pattern: litellm.completion(...)
+    pattern-sinks:
+      - pattern-either:
+        - pattern: eval(...)
+        - pattern: exec(...)
+    message: "Language model output is executed as Python. A prompt the attacker influences decides what runs. Parse a structured answer and dispatch on it instead"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-95"
+      owasp: "LLM05:2025"
+      category: "code injection"
+      internal_type: "dynamic_code_execution"
+      family: "code_injection_eval"
+      confidence: "0.90"
+      analysis_scope: "taint-intraprocedural"
+      source_description: "text returned by a language model call"
+      sink_description: "eval or exec"
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
+
+  - id: cwe-78.py-llm-output-shell
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+        - pattern: $C.chat.completions.create(...)
+        - pattern: $C.responses.create(...)
+        - pattern: $C.messages.create(...)
+        - pattern: $C.generate_content(...)
+        - pattern: litellm.completion(...)
+    pattern-sinks:
+      - pattern-either:
+        - pattern: os.system(...)
+        - pattern: os.popen(...)
+        - patterns:
+          - pattern: subprocess.$F($CMD, ..., shell=True, ...)
+          - focus-metavariable: $CMD
+    message: "Language model output is run by a shell. Map the answer onto an allowlist of commands and pass arguments as a list"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-78"
+      owasp: "LLM05:2025"
+      category: "command injection"
+      internal_type: "command_injection"
+      confidence: "0.90"
+      analysis_scope: "taint-intraprocedural"
+      source_description: "text returned by a language model call"
+      sink_description: "shell command"
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
+
+  - id: cwe-89.py-llm-output-sql
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+        - pattern: $C.chat.completions.create(...)
+        - pattern: $C.responses.create(...)
+        - pattern: $C.messages.create(...)
+        - pattern: $C.generate_content(...)
+        - pattern: litellm.completion(...)
+    pattern-sinks:
+      - patterns:
+        - pattern: $CUR.execute($Q, ...)
+        - focus-metavariable: $Q
+    message: "Language model output is spliced into SQL text. Pass the value as a bound parameter, and never let the model write the query itself"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-89"
+      owasp: "LLM05:2025"
+      category: "SQL injection"
+      internal_type: "sql_injection"
+      family: "sql_parameterization"
+      confidence: "0.88"
+      analysis_scope: "taint-intraprocedural"
+      source_description: "text returned by a language model call"
+      sink_description: "SQL query text"
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
+
+
   # ── Server-side template injection ─────────────────────────────────────
 
   - id: cwe-1336.py-jinja-template-interpolated
@@ -246,9 +370,9 @@ rules:
       - pattern-either:
         - pattern: Template(f"...{$INPUT}...")
         - pattern: jinja2.Template(f"...{$INPUT}...")
-        - pattern: Template("..." + $INPUT)
+        - pattern: Template(<... "..." + $INPUT ...>)
         - pattern: $ENV.from_string(f"...{$INPUT}...")
-        - pattern: $ENV.from_string("..." + $INPUT)
+        - pattern: $ENV.from_string(<... "..." + $INPUT ...>)
     message: "Template source built by interpolation. The input is template syntax, not data; pass it as a context variable"
     severity: ERROR
     languages: [python]
@@ -293,9 +417,9 @@ rules:
     patterns:
       - pattern-either:
         - pattern: mark_safe(f"...{$INPUT}...")
-        - pattern: mark_safe("..." + $INPUT)
+        - pattern: mark_safe(<... "..." + $INPUT ...>)
         - pattern: mark_safe("...".format(...))
-        - pattern: format_html_join($S, "..." + $INPUT, ...)
+        - pattern: format_html_join($S, <... "..." + $INPUT ...>, ...)
     message: "mark_safe on a built string turns off escaping for the interpolated value. Use format_html"
     severity: ERROR
     languages: [python]
@@ -311,7 +435,7 @@ rules:
     patterns:
       - pattern-either:
         - pattern: HttpResponse(f"...{$INPUT}...")
-        - pattern: HttpResponse("..." + $INPUT)
+        - pattern: HttpResponse(<... "..." + $INPUT ...>)
         - pattern: make_response(f"...<{$TAG}...{$INPUT}...")
       - metavariable-regex:
           metavariable: $INPUT
@@ -478,6 +602,76 @@ rules:
       confidence: "0.85"
       posting: post
 
+  - id: cwe-22.py-path-join-request-value
+    patterns:
+      # The join is reported wherever it is, not only inside `open(...)`: the two corpus
+      # shapes build the path on one statement and use it on the next, so a pattern that
+      # needs the sink around the join reaches neither. The local is followed one
+      # assignment back, in the same function, and only when it is assigned straight from
+      # the request: `secure_filename(request...)` and every other wrapper is not matched.
+      - pattern-either:
+        - pattern: os.path.join($BASE, ..., request.$ATTR.get(...), ...)
+        - pattern: os.path.join($BASE, ..., request.$ATTR[$K], ...)
+        - patterns:
+          - pattern-inside: |
+              $V = request.$ATTR[$K]
+              ...
+          - pattern: os.path.join($BASE, ..., $V, ...)
+        - patterns:
+          - pattern-inside: |
+              $V = request.$ATTR.get(...)
+              ...
+          - pattern: os.path.join($BASE, ..., $V, ...)
+      # Every branch binds $ATTR, so this constraint is safe at rule level.
+      - metavariable-regex:
+          metavariable: $ATTR
+          regex: "^(args|form|values|GET|POST|query_params|data|json|cookies|COOKIES|headers)$"
+      # A function that goes on to compare a path against its base is doing the containment
+      # this rule asks for. Which path it compares is not checked, so this errs towards
+      # silence.
+      - pattern-not-inside: |
+          def $F(...):
+              ...
+              if <... $P.startswith(...) ...>:
+                  ...
+              ...
+      - pattern-not-inside: |
+          def $F(...):
+              ...
+              if <... os.path.commonpath(...) ...>:
+                  ...
+              ...
+      - pattern-not-inside: |
+          def $F(...):
+              ...
+              if <... $P.is_relative_to(...) ...>:
+                  ...
+              ...
+    message: "Path joined from request input. `os.path.join` does not contain the result: an absolute or `../` value replaces or escapes the base. Resolve with realpath and reject anything outside the base"
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: "CWE-22"
+      owasp: "A01:2021"
+      category: "path traversal"
+      internal_type: "path_traversal"
+      family: "path_containment"
+      confidence: "0.85"
+      precision_evidence: >-
+        benchmarks/vulnerable-corpus 2026-10: 2 findings over 23 repositories, both adjudicated by
+        label and true (pygoat introduction/views.py ssrf_lab, and whoogle-search app/routes.py in
+        CVE-2024-22205), precision 1.00. A third match, whoogle-search app/routes.py line 445, is
+        the same request argument joined for a pickle write, read as true; it adds no finding
+        because the service merges it into the cwe-22.py-open-request-path finding already on that
+        statement. Written from those two labels, so in-sample, and under the three adjudicated
+        findings the posting policy asks for.
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
+
   - id: cwe-22.py-pathlib-join-interpolated
     patterns:
       - pattern: $BASE / f"...{$NAME}..."
@@ -562,11 +756,17 @@ rules:
       owasp: "A02:2021"
       category: "weak password hashing"
       internal_type: "weak_password_hash"
+      family: "password_hashing"
       confidence: "0.88"
       precision_evidence: >-
         benchmarks/vulnerable-corpus 2026-09: 3 findings over 2 repositories, all 3 adjudicated by
         label and true, precision 1.00.
-      posting: post
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
 
   - id: cwe-327.py-ecb-cipher-mode
     patterns:
@@ -908,8 +1108,14 @@ rules:
       owasp: "A05:2021"
       category: "session management"
       internal_type: "insecure_cookie_flags"
+      family: "cookie_flags"
       confidence: "0.85"
-      posting: post
+      posting: quarantine
+      posting_evidence: >-
+        Fail-closed: no reviewed independent holdout evidence meets the promotion gate in
+        benchmarks/rule-quality/README.md (at least 100 predictions, no unresolved judgments,
+        and a two-sided 95% Wilson precision lower bound of at least 0.95).
+        In-sample fixtures and historical precision prose do not authorize posting.
 
   - id: cwe-352.py-csrf-exempt
     patterns:

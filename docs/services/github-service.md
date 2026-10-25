@@ -15,7 +15,12 @@ Express service that isolates GitHub App operations from the API service.
 - Expose GitHub App health diagnostics.
 - Emit Prometheus metrics.
 
-The API service calls this service through `/internal/*` endpoints protected by `GITHUB_SERVICE_INTERNAL_SECRET`.
+The API calls this service over gRPC in Cloud Run, or through `/internal/*` HTTP
+endpoints locally. Both transports require `x-internal-secret` matching
+`GITHUB_SERVICE_INTERNAL_SECRET`. Cloud Run additionally requires an identity token
+from an authorized invoker. Every application RPC, including `HealthCheck`, is protected;
+only the standard `/grpc.health.v1.Health/Check` probe is available without the shared
+secret. See the [internal gRPC runbook](../runbooks/internal-grpc-auth.md) for rollout.
 
 ## Local Development
 
@@ -46,7 +51,7 @@ npm test       # Jest
 |---|---|
 | `WEBHOOK_SECRET` | Secret for direct webhook verification. In local Compose this is mapped from `GITHUB_WEBHOOK_SECRET`. |
 | `GITHUB_WEBHOOK_SECRET` | Root env name for webhook secret; used as fallback for `WEBHOOK_SECRET`. |
-| `GITHUB_SERVICE_INTERNAL_SECRET` | Shared secret for `/internal/*` routes and production metrics. |
+| `GITHUB_SERVICE_INTERNAL_SECRET` | Shared secret for all application gRPC methods, `/internal/*` routes, and production metrics. Unconfigured gRPC business calls fail with `UNAVAILABLE`. |
 | `GITHUB_APP_ID` | GitHub App ID. |
 | `GITHUB_APP_PRIVATE_KEY` | GitHub App private key. |
 | `DATABASE_URL` | PostgreSQL connection string. |
@@ -70,7 +75,8 @@ In production, `/metrics` requires `x-internal-secret` matching `METRICS_AUTH_TO
 
 ## Tests
 
-Current tests cover comment formatting and internal route behavior:
+Tests cover GitHub operations, internal routes, transport parity, and real local gRPC
+authentication (including unauthorized calls to every registered application method):
 
 ```bash
 npm test

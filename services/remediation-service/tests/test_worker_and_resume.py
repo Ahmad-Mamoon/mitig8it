@@ -220,7 +220,7 @@ def test_the_lease_is_never_shorter_than_three_heartbeat_intervals(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_combining_candidates_keeps_the_lease_alive(monkeypatch, request_payload):
-    """`combine_patch_bundles` runs subprocess syntax and load checks and diffs every hunk pair.
+    """`combine_patch_bundles` runs parse-only syntax checks and diffs every hunk pair.
 
     Called on the loop it stopped every renewal for as long as it took, which for a large
     batch was longer than the lease. `combine_and_verify` now runs it in a worker thread.
@@ -237,9 +237,8 @@ async def test_combining_candidates_keeps_the_lease_alive(monkeypatch, request_p
     backend = HeartbeatCountingBackend(request)
 
     def blocking_combine(req, snapshot, bundles, *, load_checks=True):
-        # `load_checks` is the engine's own keyword: an all-asserted batch combines without
-        # requiring the union, so the stub has to accept it the way the real function does.
-        assert load_checks is True
+        # Even an executed batch must defer module loading to the configured sandbox.
+        assert load_checks is False
         time.sleep(0.25)
         return SimpleNamespace(patches=[])
 

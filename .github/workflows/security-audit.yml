@@ -13,8 +13,10 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  # Deploy gating audits live in ci.yml. This workflow is retained for
-  # scheduled and manual dependency drift checks.
+  # These audits query an external advisory feed, so a CVE published overnight
+  # would turn every open pull request red with no code change. They run here on
+  # a schedule instead of in the ci.yml required gate, where a failure is news
+  # rather than a block on unrelated work.
   npm-audit:
     name: npm audit (${{ matrix.name }})
     runs-on: ubuntu-latest
@@ -35,10 +37,10 @@ jobs:
             directory: proto
             lockfile: proto/package-lock.json
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
           cache-dependency-path: ${{ matrix.lockfile }}
       - run: npm ci
@@ -65,12 +67,14 @@ jobs:
             requirements: requirements.txt
             audit_args: ""
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: '3.11'
       - run: pip install pip-audit
-      # Semgrep 1.172.0 pins mcp 1.23.3. Keep these ignored until Semgrep
+      # Semgrep 1.173.0 pins mcp 1.23.3. Keep these ignored until Semgrep
       # ships a compatible release with mcp >=1.28.1.
+      # Review the three PYSEC ignores again on 2026-12-01, or sooner if the
+      # semgrep pin in services/analysis-service/src/requirements.txt moves.
       - run: pip-audit -r "${{ matrix.requirements }}" ${{ matrix.audit_args }}
         working-directory: ${{ matrix.directory }}

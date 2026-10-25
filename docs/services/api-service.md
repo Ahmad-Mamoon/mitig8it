@@ -32,6 +32,8 @@ npm run lint
 npm test
 npm run db:migrate
 npm run db:verify
+npm run db:provision-runtime
+npm run db:verify-runtime
 ```
 
 ## Main Endpoints
@@ -51,7 +53,8 @@ npm run db:verify
 
 ## Key Environment
 
-- `DATABASE_URL`
+- `DATABASE_URL`, the restricted runtime login in production
+- `DATABASE_MIGRATION_URL`, only for the administrative `db:provision-runtime` command; never mount it into a running API or worker
 - `JWT_SECRET`
 - `ENCRYPTION_KEY`
 - `GITHUB_CLIENT_ID`
@@ -73,3 +76,11 @@ npm run db:verify
 `POST /internal/analysis-queue/tick` wakes the DB-backed analysis queue worker and returns queue stats. It requires `x-internal-secret` matching `GITHUB_SERVICE_INTERNAL_SECRET`.
 
 For the full env contract, see [environment.md](../getting-started/environment.md).
+
+Production API and standalone worker startup verify a direct non-owning login with
+`NOBYPASSRLS`, no elevated attributes or role memberships, read-only migration history,
+and forced RLS on the remediation tenant tables. Schema checks read the migration ledger;
+production refuses `AUTO_MIGRATE=true`. The deployment runs migrations with a separate
+administrative credential before provisioning and checking the runtime role. See the
+[runtime database role runbook](../runbooks/runtime-database-role.md) for the required
+one-time Secret Manager setup and integration tests.

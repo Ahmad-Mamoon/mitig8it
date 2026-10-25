@@ -78,6 +78,7 @@ Per-finding skips are reported in the job's `skipped` list and surface as the `N
 | `unsupported_language` | The file extension is neither JavaScript nor Python. Decided at selection, so such a finding never enters a job and never costs the job's other findings their repair. |
 | `pg_dependency_not_proven` | A JavaScript SQL repair whose snapshot has no `package.json` declaring `pg`. |
 | `shell_pipeline_unsupported` | The process call carries a pipe or `shell: true`. |
+| `model_authored_command` | The whole command is a language model's answer, so it needs an allowlist, not an argument list. |
 | `ambiguous_query_api` | A Python query that reaches no known driver `execute()`, so the placeholder style cannot be determined. |
 | `not_repaired` | No regression test reproduced the finding, so no candidate claims it. |
 | `regression_test_not_reproducing` | A test also passed on the baseline, so it proves nothing. |
@@ -184,11 +185,15 @@ python benchmarks/remediation/evaluate.py --suite seed
 python -m unittest benchmarks.remediation.tests.test_evaluate
 ```
 
-CI runs Gitleaks, dependency review on pull requests, npm audits, `pip-audit`, Bandit, every suite above, and Docker image builds for the backend services. A separate `remediation.yml` workflow runs the repair service tests, the offline fixture and release evaluator gate, `terraform fmt` and `validate`, and a Kustomize render. It deploys nothing.
+CI runs Gitleaks, dependency review on pull requests, Bandit, every suite above, and Docker image builds for the backend services. `npm audit` and `pip-audit` run daily in `security-audit.yml` instead, because an advisory feed moves without the code moving. A separate `remediation.yml` workflow runs the repair service tests, the offline fixture and release evaluator gate, `terraform fmt` and `validate`, and a Kustomize render. It deploys nothing.
 
 ## Deployment
 
-Deploys run from GitHub Actions after the `CI` workflow succeeds on `main`, or manually through `workflow_dispatch`. Each workflow path-filters its component, authenticates to Google Cloud with Workload Identity Federation, and ends with a smoke check.
+Production deploys are manual, ordered releases that first verify successful CI for the
+exact commit. Staging follows successful CI on `staging`. Every component uses that exact
+ref, enforces quality-readiness evidence, authenticates through Workload Identity
+Federation, and completes service plus authenticated cross-service smoke checks before
+the frontend is released.
 
 | Component | Target | Workflow |
 | --- | --- | --- |
@@ -198,9 +203,15 @@ Deploys run from GitHub Actions after the `CI` workflow succeeds on `main`, or m
 | Analysis service | Cloud Run `codesentry-analysis` | `deploy-analysis-cloudrun.yml` |
 | Remediation service | Cloud Run `codesentry-remediation` | `deploy-remediation-cloudrun.yml` |
 
-Backend images go to Google Artifact Registry. Runtime secrets come from GCP Secret Manager; the database is managed PostgreSQL supplied as `codesentry-database-url`. The API workflow runs `npm run db:migrate` from the release image before the new revision is deployed. The API and the frontend are public; the GitHub, analysis, and remediation services deploy with `--no-allow-unauthenticated` and grant the API runtime service account `roles/run.invoker`.
+Backend images go to Google Artifact Registry. Runtime secrets come from GCP Secret
+Manager. `codesentry-database-url` is used only for migrations and role provisioning;
+the API mounts the restricted `codesentry-database-runtime-url`. The API and frontend
+are public; GitHub, analysis, and remediation require Cloud Run IAM plus application auth.
 
-Every Cloud Run service scales to zero and none of the deploy workflows passes `--no-cpu-throttling` or `--min-instances` above zero, so CPU is allocated during request handling only. The remediation service is deployed with `--max-instances 1`, `--concurrency 1`, `--timeout 900`, the local execution backend, an in-process worker and sandbox, and both attestation gates false.
+The production API keeps one instance warm; staging and the other services scale to zero.
+The remediation control plane remains single-instance with a local execution store, but
+the production orchestrator selects the separately isolated Cloud Run Job sandbox and
+requires fresh release evidence before deployment.
 
 See [docs/deployment/cloud-run-firebase.md](../deployment/cloud-run-firebase.md).
 

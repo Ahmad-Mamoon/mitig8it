@@ -1,0 +1,29 @@
+name: Quality evidence admission
+description: Enforce checked-out rule evidence and fail closed on missing production readiness
+inputs:
+  environment:
+    description: Production requires independent evidence; staging permits frozen legacy exceptions
+    default: production
+  component:
+    description: analysis, remediation, or all
+    default: all
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+      with:
+        python-version: '3.11'
+    - shell: bash
+      run: python -m pip install --quiet pyyaml
+    - shell: bash
+      env:
+        QUALITY_ENVIRONMENT: ${{ inputs.environment }}
+        QUALITY_COMPONENT: ${{ inputs.component }}
+      run: |
+        set -euo pipefail
+        python -m benchmarks.rule_quality_gate
+        case "$QUALITY_ENVIRONMENT" in
+          production) python -m benchmarks.production_readiness --component "$QUALITY_COMPONENT" ;;
+          staging) python -m benchmarks.production_readiness --component "$QUALITY_COMPONENT" --compatibility ;;
+          *) echo "Unknown quality environment: $QUALITY_ENVIRONMENT" >&2; exit 2 ;;
+        esac

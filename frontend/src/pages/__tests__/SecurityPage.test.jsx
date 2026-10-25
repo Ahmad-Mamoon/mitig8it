@@ -68,7 +68,7 @@ describe('SecurityPage', () => {
       screen.getByText(/development-grade local sandbox, without kernel isolation/i)
     ).toBeInTheDocument()
     expect(screen.getByText('Prove')).toBeInTheDocument()
-    expect(screen.getByText('Regression test in a sandbox, or a static assertion')).toBeInTheDocument()
+    expect(screen.getByText('Run the configured evidence check; refuse on uncertainty')).toBeInTheDocument()
   })
 
   // The weakest level is on this page too, because a page that says how a fix is verified must

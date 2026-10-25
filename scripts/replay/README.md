@@ -18,6 +18,10 @@ PY=~/.pyenv/versions/3.11.6/bin/python
 # one repository, by pull request
 $PY scripts/replay/replay.py --repo expressjs/express --prs 15 --out results/expressjs-express.json
 
+# explicit merged PR numbers from a frozen collection list, including old PRs
+$PY scripts/replay/replay.py --repo expressjs/express --only-pr 123 --only-pr 456 \
+    --out results/expressjs-explicit-prs.json
+
 # one repository tree at a pinned commit, quarantined rules included so they stay measurable
 $PY scripts/replay/replay.py --snapshot --include-quarantined \
     --repo OWASP/NodeGoat --ref c5cb68a7084e4ae7dcc60e6a98768720a81841e8 \
@@ -32,6 +36,10 @@ $PY scripts/replay/summarize.py results-after/*.json --baseline results-before/*
 # precision and recall of snapshot runs against the corpus labels
 $PY scripts/replay/score.py results/*.json --labels benchmarks/vulnerable-corpus/labels.json \
     --adjudications benchmarks/vulnerable-corpus/adjudications.json --out /tmp/score.md
+
+# the recall ratchet: every corpus repository, then the comparison with the committed baseline
+$PY scripts/replay/ratchet.py measure --results results/
+$PY scripts/replay/ratchet.py check results/
 
 # both repair halves over the findings of earlier snapshot runs, and every complete pair's
 # proof run against the original tree and against the patched one
@@ -48,7 +56,22 @@ authenticated `gh`. Nothing is written to GitHub: every call is `gh api --method
 
 Options: `--cache` (default `scripts/replay/.cache`), `--timeout` (per-PR wall clock,
 default 300s), `--python` (interpreter for the worker), `--refresh` (bypass the cache),
-`--only-pr N` (repeatable, to re-run one pull request while triaging).
+`--only-pr N` (repeatable, to fetch exact merged PR numbers directly).
+
+`--only-pr` preserves the supplied order and ignores `--prs`: it fetches
+`repos/<repo>/pulls/<number>` through the same disk cache, retry ceiling, and
+rate-limit backoff used by other GitHub reads. It never filters a recent-PR page,
+so an old requested PR cannot silently disappear as newer PRs merge. All requested
+PRs must resolve before any replay worker starts. An unavailable, malformed,
+mismatched, or unmerged PR exits 2 with the requested number; no replay is performed
+and `--out` is not updated (an existing report is preserved, not a successful new
+collection). Always check the exit status. Zero/negative or duplicate PR numbers,
+and combinations with `--snapshot` or `--pairs`, are rejected before reads.
+Explicit runs record both `requested_prs` and `requested_pr_numbers`.
+
+This freezes PR selection only. The report records the fetched source commit;
+the caller must separately pin/audit source and system/configuration identity,
+sampling, coverage, and adjudication provenance before claiming holdout evidence.
 
 ## What it does
 
@@ -115,10 +138,11 @@ has to decide for itself is everything a pull request answered by being a diff:
   a tree is sent in batches of at most 120 files or 1.5 MB, each in its own worker under its
   own wall clock, and the findings are merged.
 
-`--include-quarantined` empties the posting policy inside the worker so a quarantined rule's
-findings are recorded. Nothing downstream is fooled: `score.py` re-applies the policy from
-the rule files and reports quarantined findings separately. Without it a run cannot tell
-whether a quarantined rule has earned its way back.
+`--include-quarantined` temporarily admits the union of declared posting and quarantined rule
+ids inside the worker so a quarantined rule's findings are recorded. It does not admit rules
+outside those reviewed policy sets. Nothing downstream is fooled: `score.py` re-applies each
+rule's status from the rule files and reports quarantined findings separately. Without it a
+run cannot tell whether a quarantined rule has earned its way back.
 
 `score.py` joins findings to labels by repository, ref, path and overlapping line range,
 within two lines of slack. Recall falls out of that join. Precision does not, because these
@@ -127,6 +151,37 @@ computed only over adjudicated findings: the ones a label confirms plus the ones
 hand. `--emit-queue` writes the reading list (every finding on a labelled line under an
 unexpected class, plus a seeded random sample of the unlabelled) and `--adjudications` reads
 the verdicts back.
+
+## Recall ratchet
+
+`ratchet.py` turns the snapshot measurement into a regression gate. `measure` runs
+`replay.py --snapshot --include-quarantined --no-remediation --no-tier1-budget` once per
+repository pinned in `labels.json`, each into its own result file. `check` joins those results to the labels with
+`score.join`, reduces each label to two facts (hit, and hit by a rule that posts) and compares
+them with `benchmarks/vulnerable-corpus/recall-baseline.json`. `update` writes that file, and
+refuses to when the run is incomplete.
+
+| Exit | Meaning |
+| ---: | --- |
+| 0 | No label regressed. Newly hit labels are listed as improvements. |
+| 1 | A label that was hit is not hit, or a posting hit is now a quarantined hit only. The ids are printed. |
+| 2 | Not comparable: a repository has no result or was measured at another ref, a batch or a tier failed or ran into a time or memory ceiling, or the baseline and the labels name different labels. |
+
+`--no-tier1-budget` is there because of what a snapshot batch does to tier 1. The service stops
+tier 1 after 20 s per request and 2 s per file (`TIER1_BUDGET_SECONDS`,
+`TIER1_FILE_BUDGET_SECONDS`) and records a limitation. A batch of 120 whole files reaches both:
+on an idle machine four corpus files hit the per-file cap, and under load one run lost 59
+findings in three repositories to the two limits together. The flag sets both to a day, through
+the environment the workers inherit. Without it a snapshot run still works and its tier 1
+findings depend on the machine; the worker keeps each stage's `analysis_limitations` on the
+record, so a run says when that happened, and the ratchet refuses a run in which it did.
+
+A regressed label in a file the scanner could only partly parse has that limitation printed
+beside it.
+
+The comparison is unit-tested without the corpus in
+`services/analysis-service/src/tests/test_recall_ratchet.py`. When to refresh the baseline is
+in `benchmarks/vulnerable-corpus/README.md`.
 
 ## Pairs mode
 

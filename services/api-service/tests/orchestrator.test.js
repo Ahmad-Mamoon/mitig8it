@@ -139,7 +139,7 @@ describe('PR Analysis Orchestrator — pure functions', () => {
     expect(lines.join('\n')).not.toContain('](');
   });
 
-  test('buildReviewComment renders GitHub suggestion blocks for validated Tier 3 patches', () => {
+  test('buildReviewComment withholds structurally validated Tier 3 code pending independent repair verification', () => {
     const { __private } = require('../src/services/prAnalysisOrchestrator');
 
     const body = __private.buildReviewComment({
@@ -163,8 +163,9 @@ describe('PR Analysis Orchestrator — pure functions', () => {
       filePatch: '@@ -1 +1 @@\n-eval(req.body.code);\n+eval(req.body.code);',
     });
 
-    expect(body).toContain('```suggestion');
-    expect(body).toContain('const payload = JSON.parse(req.body.code);');
+    expect(body).not.toContain('```');
+    expect(body).not.toContain('const payload = JSON.parse(req.body.code);');
+    expect(body).toContain('has not been independently verified');
     expect(body).not.toContain('**Suggested fix code:**');
     expect(body).not.toContain('**Candidate fix code:**');
   });
@@ -188,7 +189,7 @@ describe('PR Analysis Orchestrator — pure functions', () => {
     expect(body).not.toContain('```suggestion');
     expect(body).toContain('**Fix:** Replace eval with JSON parsing.');
     expect(body).not.toContain('**Candidate fix code:**');
-    expect(body).toContain('const payload = JSON.parse(req.body.code);');
+    expect(body).not.toContain('const payload = JSON.parse(req.body.code);');
   });
 
   test('buildReviewComment uses repo-aware SQL remediation when auto-fix is not allowed', () => {
@@ -411,7 +412,7 @@ describe('PR Analysis Orchestrator — pure functions', () => {
     expect(result.reason).toContain('parameterized query pattern');
   });
 
-  test('buildReviewComment renders Tier 3 suggestion for repo-consistent SQL fix', () => {
+  test('buildReviewComment keeps a repo-consistent SQL proposal advisory until independently verified', () => {
     const { __private } = require('../src/services/prAnalysisOrchestrator');
 
     const body = __private.buildReviewComment({
@@ -441,8 +442,8 @@ describe('PR Analysis Orchestrator — pure functions', () => {
       },
     });
 
-    expect(body).toContain('```suggestion');
-    expect(body).toContain('db.query("SELECT * FROM users WHERE id = ?", [userId]);');
+    expect(body).not.toContain('```');
+    expect(body).not.toContain('db.query("SELECT * FROM users WHERE id = ?", [userId]);');
     expect(body).not.toContain('**Suggested fix code:**');
   });
 
@@ -1178,7 +1179,7 @@ describe('PR Analysis Orchestrator — pipeline', () => {
     expect(inlineCall[1].body).not.toContain('```suggestion');
     expect(inlineCall[1].body).toContain('**Fix:** Replace eval/exec with safe alternatives.');
     expect(inlineCall[1].body).not.toContain('**Candidate fix code:**');
-    expect(inlineCall[1].body).toContain('const payload = JSON.parse(req.body.code);');
+    expect(inlineCall[1].body).not.toContain('const payload = JSON.parse(req.body.code);');
   });
 
   test('fails run when required review publication fails', async () => {
@@ -1363,7 +1364,7 @@ describe('PR Analysis Orchestrator — pipeline', () => {
       line_start: 2,
       line_end: 2,
       code_snippet: 'fs.readFile(file)',
-      evidence: 'OpenGrep AST match on rule `cwe-22.path-traversal-fs`',
+      evidence: 'Matched rule `cwe-22.path-traversal-fs`',
       remediation: 'Validate the path against an allowlist.',
       remediation_patch: 'const file = path.basename(req.query.file);',
       fingerprint: 'fp-tier2-evidence',
